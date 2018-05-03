@@ -1,0 +1,43 @@
+---
+title: "eda_nominal"
+output: html_document
+---
+
+```{r, include=FALSE, echo=FALSE}
+source("../utils.R")
+dotenv::load_dot_env("../.env")
+```
+
+
+```{r, echo=FALSE}
+require(DBI)
+con <- dbConnect(AWR.Athena::Athena(), region='us-west-2', s3_staging_dir=Sys.getenv("S3_DIR"),
+                 schema_name=Sys.getenv("SCHEMA"))
+
+dbListTables(con)
+
+catalogo_beneficios <- read_csv()
+```
+
+###  Montos por persona
+El primer análisis es contar el número de programas que recibe una persona
+
+```{r, echo=FALSE}
+
+programas_persona <- dbGetQuery(con, 
+          "SELECT  year, new_id, count(cve_programa) as numero_programas 
+              FROM pub_nominal.nominal 
+              GROUP BY year, new_id 
+              ORDER BY numero_programas DESC LIMIT 50;")
+programas_persona
+```
+
+
+```{r}
+montos_person <- dbGetQuery(con, 
+          "SELECT  year, new_id, sum(nu_imp_monetario) as monto_anual FROM 
+           pub_nominal.nominal GROUP BY year, cve_padron, cd_beneficio, new_id 
+           ORDER BY monto_anual DESC LIMIT 10;")
+
+```
+
