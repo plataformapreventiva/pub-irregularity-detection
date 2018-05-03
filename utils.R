@@ -21,5 +21,3 @@ paquetes <- c('magrittr', 'dplyr', 'tidyr', 'readr',
 lapply(paquetes, instalar)
 
 devtools::install_github("gaborcsardi/dotenv")
-
-
