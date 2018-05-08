@@ -1,0 +1,61 @@
+---
+title: "dbconnection_eda"
+output: html_document
+---
+
+### Utils
+```{r, include=FALSE, echo=FALSE}
+source("../utils.R")
+```
+
+### DB conections
+```{r, echo=FALSE}
+con <- pub_connect("s3://pub-irreg-eda","pub_nominal")
+```
+###  Programas por persona
+
+```{r, echo=FALSE}
+programas_persona <- dbGetQuery(con,
+          "SELECT  year, new_id, count(distinct cve_muni) as num_muni, count(distinct cve_programa) as numero_programas
+              FROM pub_nominal.nominal
+              GROUP BY year, new_id
+              ORDER BY num_muni DESC LIMIT 50;")
+programas_persona
+```
+
+```{r, echo=FALSE}
+monto_persona <- dbGetQuery(con,
+          "SELECT  year, new_id, count(distinct cve_muni) as num_muni, count(distinct cve_programa) as numero_programas, sum(nu_imp_monetario) as monto_anual
+              FROM pub_nominal.nominal
+              GROUP BY year, new_id, cve_padron, cd_beneficio
+              ORDER BY monto_anual DESC LIMIT 50;")
+monto_persona
+```
+
+```{r, echo=FALSE}
+monto_persona_muni <- dbGetQuery(con,
+          "SELECT  year, new_id, count(distinct cve_muni) as num_muni, count(distinct cve_programa) as numero_programas, sum(nu_imp_monetario) as monto_anual
+              FROM pub_nominal.nominal
+              GROUP BY year, new_id, cve_padron, cd_beneficio
+              ORDER BY num_muni DESC LIMIT 50;")
+monto_persona_muni
+```
+
+
+```{r, echo=FALSE}
+monto_persona_ent <- dbGetQuery(con,
+          "SELECT  year, new_id, count(distinct cve_ent) as num_ent, count(distinct cve_programa) as numero_programas, sum(nu_imp_monetario) as monto_anual
+              FROM pub_nominal.nominal
+              GROUP BY year, new_id, cve_padron, cd_beneficio
+              ORDER BY num_ent DESC LIMIT 50;")
+monto_persona_ent
+```
+
+
+#### Preguntas
+Programa - temporal
+- Personas recibiendo beneficios anómalos de un mismo programa
+Espacial
+- Personas que recibieron programas en múltiples municipios durante periodos cortos - ver lejanía.
+Categoría
+- Personas mayores/menores de edad con programas fuera de población objetivo.
