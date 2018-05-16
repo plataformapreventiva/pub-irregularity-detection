@@ -117,7 +117,7 @@ plt
 
 
 ```{r}
-merge(monto_persona,catalogo_beneficios, by="cd_beneficio") %>% View()
+#merge(monto_persona,catalogo_beneficios, by="cd_beneficio") %>% View()
 ```
 
 ```{r, echo=FALSE}
@@ -125,39 +125,31 @@ query <- "SELECT  year, new_id, count(distinct cve_muni) as num_muni, count(dist
               FROM pub_nominal.nominal
               GROUP BY year, new_id, cve_padron, cd_beneficio
               ORDER BY num_muni DESC LIMIT 50;"
-monto_persona_muni <- load_or_run(con,query,los_queries)
+c(monto_persona_muni,los_queries) := load_or_run(con,query,los_queries)
 ```
 
 
 ```{r, echo=FALSE}
-monto_persona_ent <- dbGetQuery(con,
-          "SELECT  year, new_id, count(distinct cve_ent) as num_ent, count(distinct cve_programa) as numero_programas, sum(nu_imp_monetario) as monto_anual, cd_beneficio
+query <-      "SELECT  year, new_id, count(distinct cve_ent) as num_ent, count(distinct cve_programa) as numero_programas, sum(nu_imp_monetario) as monto_anual, cd_beneficio
               FROM pub_nominal.nominal
               GROUP BY year, new_id, cve_padron, cd_beneficio
-              ORDER BY num_ent DESC LIMIT 50;")
-monto_persona_ent
+              ORDER BY num_ent DESC LIMIT 50;"
+c(monto_persona_ent,los_queries) := load_or_run(con,query,los_queries)
 ```
 
 
 ```{r}
 cruzado <- merge(monto_persona_ent,catalogo_beneficios, by="cd_beneficio")
-cruzado %>% View()
 ```
 
 ```{r, echo=FALSE}
-monto_emprendedor <- dbGetQuery(con,
-          "SELECT  year, sum(nu_imp_monetario) as monto_anual, cd_beneficio, cve_programa
+query <-      "SELECT  year, sum(nu_imp_monetario) as monto_anual, cd_beneficio, cve_programa
               FROM pub_nominal.nominal where cve_programa='S020'
               GROUP BY year, cd_beneficio, cve_programa
-              ORDER BY monto_anual DESC LIMIT 50;")
+              ORDER BY monto_anual DESC LIMIT 50;"
+c(monto_emprendedor,los_queries) := load_or_run(con,query,los_queries)
 ```
 
-
-```{r}
-monto_emprendedor %>% View()
-```
-query <- "SELECT * FROM pub_nominal.nominal tablesample bernoulli(0.001) repeatable(1234)"
-DBI::dbGetQuery(con,query)
 
 #### Preguntas
 Programa - temporal
