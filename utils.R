@@ -21,7 +21,7 @@ paquetes <- c('magrittr', 'dplyr', 'tidyr', 'readr',
 lapply(paquetes, instalar)
 
 devtools::install_github("gaborcsardi/dotenv")
+library(dotenv)
 devtools::install_github("bmschmidt/wordVectors")
 devtools::install_github("plataformapreventiva/dbconnection", ref = "develop",auth_token=Sys.getenv("GITHUB_PATH"), build_vignettes=TRUE)
-library(dotenv)
 library(dbconnection)
