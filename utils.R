@@ -22,6 +22,6 @@ lapply(paquetes, instalar)
 
 devtools::install_github("gaborcsardi/dotenv")
 devtools::install_github("bmschmidt/wordVectors")
-devtools::install_github("plataformapreventiva/dbconnection", ref = "feature/athena/ES-17",auth_token=Sys.getenv("GITHUB_PATH"), build_vignettes=TRUE)
+devtools::install_github("plataformapreventiva/dbconnection", ref = "develop",auth_token=Sys.getenv("GITHUB_PATH"), build_vignettes=TRUE)
 library(dotenv)
 library(dbconnection)

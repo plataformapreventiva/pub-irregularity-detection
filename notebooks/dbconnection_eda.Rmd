@@ -2,55 +2,162 @@
 title: "dbconnection_eda"
 output: html_document
 ---
+```{r}
+library(ggplot2)
+```
 
 ### Utils
 ```{r, include=FALSE, echo=FALSE}
 source("../utils.R")
+dotenv::load_dot_env("../.env")
+```
+
+```{r, include=FALSE, echo=FALSE}
+source("../colonequals.R")
 ```
 
 ### DB conections
 ```{r, echo=FALSE}
-con <- pub_connect("s3://pub-irreg-eda","pub_nominal")
+con <- pub_connect(s3dir = Sys.getenv("S3_DIR"), schema = Sys.getenv("SCHEMA"))
 ```
-###  Programas por persona
+
+### Catálogo de queries
+```{r, echo=FALSE}
+los_queries <- query_dic()
+```
 
 ```{r, echo=FALSE}
-programas_persona <- dbGetQuery(con,
-          "SELECT  year, new_id, count(distinct cve_muni) as num_muni, count(distinct cve_programa) as numero_programas
+# Catálogo de Beneficios
+catalogo_beneficios <- csv_s3()
+colnames(catalogo_beneficios) <- c("cd_beneficio","nb_beneficio")
+```
+
+###  Programas por persona
+```{r, echo=FALSE}
+query <- "SELECT  year, new_id, count(distinct cve_muni) as num_muni, count(distinct cve_programa) as numero_programas
               FROM pub_nominal.nominal
               GROUP BY year, new_id
-              ORDER BY num_muni DESC LIMIT 50;")
-programas_persona
+              ORDER BY num_muni DESC LIMIT 50;"
+c(programas_persona,los_queries) := load_or_run(con,query,los_queries)
 ```
 
 ```{r, echo=FALSE}
-monto_persona <- dbGetQuery(con,
-          "SELECT  year, new_id, count(distinct cve_muni) as num_muni, count(distinct cve_programa) as numero_programas, sum(nu_imp_monetario) as monto_anual
-              FROM pub_nominal.nominal
-              GROUP BY year, new_id, cve_padron, cd_beneficio
-              ORDER BY monto_anual DESC LIMIT 50;")
-monto_persona
+query <- "SELECT * FROM athena_pub.pub_nominal limit 10"
+c(sample10,los_queries) := load_or_run(con,query,los_queries)
 ```
 
 ```{r, echo=FALSE}
-monto_persona_muni <- dbGetQuery(con,
-          "SELECT  year, new_id, count(distinct cve_muni) as num_muni, count(distinct cve_programa) as numero_programas, sum(nu_imp_monetario) as monto_anual
+query <- "SELECT  year, new_id, count(distinct cve_muni) as num_muni, count(distinct cve_programa) as numero_programas, sum(nu_imp_monetario) as monto_anual, cd_beneficio, cve_programa
+              FROM pub_nominal.nominal
+              GROUP BY year, new_id, cve_padron, cd_beneficio, cve_programa
+              ORDER BY monto_anual DESC LIMIT 50;"
+c(monto_persona,los_queries) := load_or_run(con,query,los_queries)
+```
+
+
+```{r}
+query <- "SELECT year, cve_programa, sum(nu_imp_monetario) as money
+          FROM pub_nominal.nominal
+          GROUP BY year,cve_programa
+          ORDER BY money DESC;"
+c(dinero_programa,los_queries) := load_or_run(con,query,los_queries)
+```
+
+```{r}
+query <- "SELECT cdprograma, sum(nuimpmonetario) as money
+          FROM athena_pub.pub_nominal
+          GROUP BY cdprograma
+          ORDER BY money DESC;"
+c(dinero_programa_total,los_queries) := load_or_run(con,query,los_queries)
+```
+
+```{r}
+dpt <- dinero_programa_total[complete.cases(dinero_programa_total),]
+p <- dpt %>%
+    ggplot(aes(x=cdprograma,y=money)) +
+    geom_bar(stat="identity")
+p
+```
+
+
+```{r}
+dpt <- dpt[1:10,]
+pie <- dpt %>%
+    ggplot(aes(x=cdprograma,y=money,fill=cdprograma)) +
+    geom_bar(width=1,stat="identity") +
+    scale_fill_brewer(palette = "Spectral") +
+    theme_minimal()
+pie
+```
+
+
+```{r}
+query <- "SELECT cdprograma, sum(nuimpmonetario) as money, count(distinct newid) as persons
+          FROM athena_pub.pub_nominal
+          GROUP BY cdprograma
+          ORDER BY money DESC;"
+c(dinero_programa_persona,los_queries) := load_or_run(con,query,los_queries)
+```
+
+```{r}
+din_per <- dinero_programa_persona[complete.cases(dinero_programa_persona),]
+din_per
+din_por_per <- mutate(din_per,div=money/persons)
+dpp <- din_por_per[order(-din_por_per$div),]
+dpp <- dpp[-1,]
+dpp <- dpp[1:10,]
+```
+
+```{r}
+plt <- dpp %>%
+  ggplot(aes(x=cdprograma, y=div,fill=cdprograma)) +
+  geom_bar(width=1,stat="identity")
+plt
+```
+
+
+```{r}
+merge(monto_persona,catalogo_beneficios, by="cd_beneficio") %>% View()
+```
+
+```{r, echo=FALSE}
+query <- "SELECT  year, new_id, count(distinct cve_muni) as num_muni, count(distinct cve_programa) as numero_programas, sum(nu_imp_monetario) as monto_anual
               FROM pub_nominal.nominal
               GROUP BY year, new_id, cve_padron, cd_beneficio
-              ORDER BY num_muni DESC LIMIT 50;")
-monto_persona_muni
+              ORDER BY num_muni DESC LIMIT 50;"
+monto_persona_muni <- load_or_run(con,query,los_queries)
 ```
 
 
 ```{r, echo=FALSE}
 monto_persona_ent <- dbGetQuery(con,
-          "SELECT  year, new_id, count(distinct cve_ent) as num_ent, count(distinct cve_programa) as numero_programas, sum(nu_imp_monetario) as monto_anual
+          "SELECT  year, new_id, count(distinct cve_ent) as num_ent, count(distinct cve_programa) as numero_programas, sum(nu_imp_monetario) as monto_anual, cd_beneficio
               FROM pub_nominal.nominal
               GROUP BY year, new_id, cve_padron, cd_beneficio
               ORDER BY num_ent DESC LIMIT 50;")
 monto_persona_ent
 ```
 
+
+```{r}
+cruzado <- merge(monto_persona_ent,catalogo_beneficios, by="cd_beneficio")
+cruzado %>% View()
+```
+
+```{r, echo=FALSE}
+monto_emprendedor <- dbGetQuery(con,
+          "SELECT  year, sum(nu_imp_monetario) as monto_anual, cd_beneficio, cve_programa
+              FROM pub_nominal.nominal where cve_programa='S020'
+              GROUP BY year, cd_beneficio, cve_programa
+              ORDER BY monto_anual DESC LIMIT 50;")
+```
+
+
+```{r}
+monto_emprendedor %>% View()
+```
+query <- "SELECT * FROM pub_nominal.nominal tablesample bernoulli(0.001) repeatable(1234)"
+DBI::dbGetQuery(con,query)
 
 #### Preguntas
 Programa - temporal
