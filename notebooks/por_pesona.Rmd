@@ -53,6 +53,7 @@ query <-      "SELECT anio, newid, sum(nuimpmonetario) as monto_anual, cdbenefic
               GROUP BY anio, newid, cdbeneficio
               ORDER BY monto_anual DESC LIMIT 50;"
 c(monto_persona_ent,los_queries) := load_or_run(con,query,los_queries)
+monto_persona_ent
 ```
 
 
@@ -64,6 +65,7 @@ query <-      "SELECT anio, newid, count(newid) as veces, sum(nuimpmonetario) as
               GROUP BY anio, newid, cdbeneficio
               ORDER BY monto_anual DESC LIMIT 50;"
 c(monto_persona_37,los_queries) := load_or_run(con,query,los_queries)
+monto_persona_37
 ```
 
 
@@ -75,3 +77,45 @@ query <-      "SELECT count(*) as conteo
 c(conteo,los_queries) := load_or_run(con,query,los_queries)
 monto_persona_37$monto_anual[1]/conteo
 ```
+
+
+
+
+
+```{r}
+library(sp)
+library(RColorBrewer)
+```
+
+```{r}
+query <-      "SELECT * FROM athena_pub.pub_nominal limit 10;"
+c(muestra,los_queries) := load_or_run(con,query,los_queries)
+colnames(muestra)
+```
+
+```{r}
+query <- "SELECT anio, cdprograma, nbprograma
+          FROM athena_pub.pub_nominal
+          WHERE anio=2017
+          GROUP BY anio, nbprograma, cdprograma;"
+c(programas_17,los_queries) := load_or_run(con,query,los_queries)
+```
+
+```{r}
+con1 <- prev_connect()
+cuaps_p <- load_table(con1,raw,cuaps_sedesol)
+cuaps_p
+```
+
+```{r}
+cuaps_p <- retrive_result(cuaps_p,158)
+cuaps_p$cve_programa
+```
+
+
+
+
+```{r}
+join_tables(programas_17,cuaps_p,cdprograma,cve_programa)
+```
+
