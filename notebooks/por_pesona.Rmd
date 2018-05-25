@@ -110,12 +110,20 @@ cuaps_p
 ```{r}
 cuaps_p <- retrive_result(cuaps_p,158)
 cuaps_p$cve_programa
+programas_17$cdprograma
+intersect(cuaps_p$cve_programa,programas_17$cdprograma)
 ```
 
 
 
 
 ```{r}
-join_tables(programas_17,cuaps_p,cdprograma,cve_programa)
+# join_tables(programas_17,cuaps_p,cdprograma,cve_programa)
+join_tables(programas_17,cve_programa,cuaps_p,cdprograma)
+cuaps_p %>% tbl_df() %>% filter(cve_programa %in% programas_17$cdprograma) %>% collect()
+```
+
+```{r}
+programas_17 %>% tbl_df() %>% filter(cdprograma%in% cuaps_p$cve_programa) %>% collect()
 ```
 

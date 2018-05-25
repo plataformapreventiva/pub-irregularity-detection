@@ -1,0 +1,134 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+dotenv::load_dot_env("../.env")
+library(dbrsocial)
+```
+
+```{r}
+library(ggplot2)
+library(plyr)
+library(dplyr)
+library(scales)
+library(maptools)
+library(rgdal)
+library(ggmap)
+library(gridExtra)
+library(Hmisc)
+```
+
+### DB conections
+```{r, echo=FALSE}
+con <- pub_connect(s3dir = Sys.getenv("S3_DIR"), schema = Sys.getenv("SCHEMA"))
+```
+
+### Catálogo de queries
+```{r, echo=FALSE}
+los_queries <- query_dic()
+```
+
+```{r, echo=FALSE}
+los_estados <- read_csv("../estados.csv")
+colnames(los_estados) <- c("num","id")
+```
+
+```{r}
+query <- "SELECT cveent, count(*) as cuenta
+          FROM athena_pub.pub_nominal
+          WHERE newid is null AND nbnombre is null
+          AND nbprimerap is null AND nbsegundoap is null
+          GROUP BY cveent
+          ORDER BY cuenta DESC"
+c(estado_noiden,los_queries) := load_or_run(con,query,los_queries)
+colnames(estado_noiden) <- c("num","cuenta")
+estado_noiden$num <- as.integer(estado_noiden$num)
+cuentas <- left_join(los_estados,estado_noiden)
+cuentas
+cuentas <- mutate(cuentas,cnorma=cuenta/distintos)
+```
+
+
+```{r}
+edo_shp <- readOGR("../shps/estados_ligero" , "estados_ligero")
+edo_df <- fortify(edo_shp, region = "NOM_ENT")
+
+edos <- edo_df %>%
+  left_join(cuentas)
+
+ggplot() + 
+  geom_polygon(data = edos, aes(long, lat, group=group,fill=cuenta))+
+  labs(title="Número de NA en identificadores normalizado", fill="NA")+
+  coord_fixed()
+
+  geom_polygon(colour='darkgrey', fill='cuenta') +
+  coord_map(projection="mercator") +
+  theme_nothing()
+```
+
+
+
+
+
+
+
+```{r}
+edo_shp <- readOGR("../shps/estados_ligero" , "estados_ligero")
+edo_df <- fortify(edo_shp, region = "NOM_ENT")
+
+edos <- edo_df %>%
+  left_join(cuentas)
+
+ggplot() + 
+  geom_polygon(data = edos, aes(long, lat, group=group,fill=cnorma))+
+  labs(title="Número de NA en Identificadores normalizado", fill="NA")+
+  coord_fixed()
+```
+
+
+```{r}
+query <- "SELECT cveent, count(*) as cuenta
+          FROM athena_pub.pub_nominal
+          WHERE newid is null
+          GROUP BY cveent
+          ORDER BY cuenta DESC"
+c(estado_noiden,los_queries) := load_or_run(con,query,los_queries)
+colnames(estado_noiden) <- c("num","cuenta")
+estado_noiden$num <- as.integer(estado_noiden$num)
+cuentas <- left_join(los_estados,estado_noiden)
+cuentas
+cuentas <- mutate(cuentas,cnorma=cuenta/distintos)
+```
+
+
+```{r}
+edo_shp <- readOGR("../shps/estados_ligero" , "estados_ligero")
+edo_df <- fortify(edo_shp, region = "NOM_ENT")
+
+edos <- edo_df %>%
+  left_join(cuentas)
+
+ggplot() + 
+  geom_polygon(data = edos, aes(long, lat, group=group,fill=cuenta))+
+  labs(title="Número de NA en newid", fill="NA")+
+  coord_fixed()
+
+```
+
+
+```{r}
+edo_shp <- readOGR("../shps/estados_ligero" , "estados_ligero")
+edo_df <- fortify(edo_shp, region = "NOM_ENT")
+
+edos <- edo_df %>%
+  left_join(cuentas)
+
+ggplot() + 
+  geom_polygon(data = edos, aes(long, lat, group=group,fill=cnorma))+
+  labs(title="Número de NA en newid normalizado", fill="NA")+
+  coord_fixed()
+```
+
+
