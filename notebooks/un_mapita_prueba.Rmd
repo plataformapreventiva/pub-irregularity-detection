@@ -60,27 +60,13 @@ edos <- edo_df %>%
 
 ggplot() + 
   geom_polygon(data = edos, aes(long, lat, group=group,fill=cuenta))+
-  labs(title="Número de NA en identificadores normalizado", fill="NA")+
+  labs(title="Número de NA en identificadores", fill="NA")+
   coord_fixed()
-
-  geom_polygon(colour='darkgrey', fill='cuenta') +
-  coord_map(projection="mercator") +
-  theme_nothing()
 ```
 
 
 
-
-
-
-
 ```{r}
-edo_shp <- readOGR("../shps/estados_ligero" , "estados_ligero")
-edo_df <- fortify(edo_shp, region = "NOM_ENT")
-
-edos <- edo_df %>%
-  left_join(cuentas)
-
 ggplot() + 
   geom_polygon(data = edos, aes(long, lat, group=group,fill=cnorma))+
   labs(title="Número de NA en Identificadores normalizado", fill="NA")+
@@ -119,12 +105,6 @@ ggplot() +
 
 
 ```{r}
-edo_shp <- readOGR("../shps/estados_ligero" , "estados_ligero")
-edo_df <- fortify(edo_shp, region = "NOM_ENT")
-
-edos <- edo_df %>%
-  left_join(cuentas)
-
 ggplot() + 
   geom_polygon(data = edos, aes(long, lat, group=group,fill=cnorma))+
   labs(title="Número de NA en newid normalizado", fill="NA")+
@@ -132,3 +112,10 @@ ggplot() +
 ```
 
 
+
+```{r}
+ggplot() + 
+  geom_polygon(data = edos, aes(long, lat, group=group,fill=distintos))+
+  labs(title="Número de distintos beneficiarios", fill="Beneficiarios")+
+  coord_fixed()
+```

@@ -96,6 +96,7 @@ estado_noiden
 ```{r}
 edo_shp <- readOGR("../shps/estados_ligero" , "estados_ligero")
 edo_df <- fortify(edo_shp, region = "NOM_ENT")
+edo_df$id %>% unique()
 
 edos <- edo_df %>%
   left_join(los_estados) %>%
