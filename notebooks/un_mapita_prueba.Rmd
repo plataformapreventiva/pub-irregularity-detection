@@ -119,3 +119,10 @@ ggplot() +
   labs(title="Número de distintos beneficiarios", fill="Beneficiarios")+
   coord_fixed()
 ```
+
+
+
+
+
+
+
