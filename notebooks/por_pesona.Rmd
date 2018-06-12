@@ -28,13 +28,17 @@ colnames(catalogo_beneficios) <- c("cd_beneficio","nb_beneficio")
 
 ###  Programas por persona
 ```{r, echo=FALSE}
-query <- "SELECT  year, new_id, count(distinct cve_muni) as num_muni, count(distinct cve_programa) as numero_programas
-              FROM pub_nominal.nominal
-              GROUP BY year, new_id
-              ORDER BY num_muni DESC LIMIT 50;"
+query <- "select num_muni, count(*) as conteo from (SELECT  anio, newid, count(distinct cvemuni) as num_muni, count(distinct cdprograma) as numero_programas
+              FROM athena_pub.pub_nominal
+              WHERE cveent='29'
+              GROUP BY anio, newid) group by num_muni order by conteo desc;"
 c(programas_persona,los_queries) := load_or_run(con,query,los_queries)
 ```
 
+```{r}
+qplot(programas_persona$num_muni)+ scale_x_log10()
+table(programas_persona$num_muni)
+```
 
 ```{r, echo=FALSE}
 query <-      "SELECT  anio, newid, count(distinct cveent) as num_ent, count(distinct cdprograma) as numero_programas, sum(nuimpmonetario) as monto_anual, cdbeneficio
