@@ -1,0 +1,285 @@
+---
+title: "Filtro500millones"
+output: html_document
+---
+
+---
+title: "Detección de irregularidades en el Padrón Único de Beneficiarios"
+output:
+  html_document:
+    df_print: paged
+---
+# Introducción
+Este reporte presenta avances al análisis de detección de irregularidades en el Padrón Único de beneficiarios.
+
+# Limitaciones: 
+- Los resultados de este reporte dependen en buena medida de la identificación única de los beneficiarios. Éste proceso, que terminará en la generación de un nuevo id único por beneficiario, está siendo desarrollado dentro del SISI y se espera su término a mediados de Agosto. Por esta razón, pueden existir duplicidades (beneficiarios contados como dos personas) lo que puede inflar el porcentaje de cobertura. 
+
+```{r, echo=FALSE, results='hide', include=FALSE}
+dotenv::load_dot_env("../.env")
+library(dbrsocial)
+```
+
+```{r, echo=FALSE, results='hide', include=FALSE}
+library(ggplot2)
+library(tidyverse)
+library(plyr)
+library(dplyr)
+library(scales)
+library(maptools)
+library(rgdal)
+library(ggmap)
+library(gridExtra)
+library(rgdal)
+library(Hmisc)
+library(rgeos)
+library(sp)
+library(sf)
+library(rgeos)
+library(broom)
+library(scales)
+library(rangeMapper)
+library(ggmap)
+library(plotly)
+library(viridis)
+```
+
+```{r, echo=FALSE, results='hide', include=FALSE, message=FALSE, warning=FALSE}
+
+### DB conections
+con <- pub_connect(s3dir = Sys.getenv("S3_DIR"), schema = Sys.getenv("SCHEMA"))
+con1 <- prev_connect()
+```
+
+```{r, echo=FALSE, results='hide', include=FALSE, message=FALSE, warning=FALSE}
+### Dejamos esta función porque por alguna razón no se carga al instalar el paquete ):
+load_query <- function(connection,schema,the_table,columns="*",options=""){
+    the_query <- "SELECT %s FROM %s.%s"
+    complete <- paste0(the_query," ",options)
+    schema    <- deparse(substitute(schema))
+    the_table <- deparse(substitute(the_table))
+    initial <- RPostgreSQL::dbSendQuery(connection,
+                             sprintf(complete,columns,schema,the_table))
+}
+
+load_geom <- function(connection,schema,the_table,columns="cve_mun, cve_ent, cve_muni, ", geom_col, col_shape, options=""){
+    geom_col <- deparse(substitute(geom_col))
+    schema    <- deparse(substitute(schema))
+    the_table <- deparse(substitute(the_table))
+    col_shape <- deparse(substitute(col_shape))
+
+    the_query <- "SELECT %s FROM %s.%s"
+    geom_col_as <- sprintf("ST_AsText(%s) as geom",geom_col)
+    columns <- paste0(columns,geom_col_as)
+    complete <- paste0(the_query," ",options)
+
+    initial <- RPostgreSQL::dbSendQuery(connection,
+                             sprintf(complete,columns,schema,the_table)) %>%
+    retrieve_result()
+
+    mun_shp = WKT2SpatialPolygonsDataFrame(initial, geom = geom_col, id = col_shape)
+    mun_df <- fortify(mun_shp, region = col_shape)
+    names(mun_df)[names(mun_df)=="id"] <- col_shape
+
+    return(mun_df)
+}
+
+theme_pub <- function(base_size=12, font=NA){
+  txt <- element_text(size = base_size+2, colour = "black", face = "plain")
+  bold_txt <- element_text(size = base_size+2, colour = "black", face = "bold")
+  
+  theme_classic(base_size = base_size, base_family = font) +
+    
+  theme(plot.title = element_text(size = 30, face = "bold"),
+        axis.title.x = element_text(size=20),
+        axis.title.y = element_text(size=20),
+        axis.text.x = element_text(angle = 45, size=18, hjust = 1),
+        axis.text.y = element_text(size=22))
+}
+
+quant_labels <- function(variable, no_classes=6){
+  quantiles <- quantile(variable, 
+                        probs = seq(0, 1, length.out = no_classes + 1),na.rm = TRUE)
+  labels <- c()
+  for(idx in 1:length(quantiles)){labels <- c(labels, paste0(round(quantiles[idx], 2)," – ", round(quantiles[idx + 1], 2))) }
+  labels <- labels[1:length(labels)-1]
+  variable_q <- cut(variable, breaks = quantiles,labels = labels, include.lowest = T)
+  return(variable_q)
+}
+```
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+### Catálogo de queries y la información por municipios de CONEVAL
+los_queries <- query_dic()
+coneval <- load_table(con1,clean,coneval_municipios) %>% retrieve_result() %>% 
+  filter(data_date == "2015-a")
+```
+
+
+
+# Análisis Nacional
+
+
+## Número total de beneficiarios y monto total de beneficios monetarios durante el 2017.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+query <- "SELECT count(distinct newid), sum(nuimpmonetario) as monto
+              FROM athena_pub.pub_nominal
+              WHERE anio=2017 AND cast(newid as integer) < 500000000"
+              
+c(monto_anual,los_queries) := load_or_run(con,query,los_queries)
+colnames(monto_anual) <- c("Número de Beneficiarios Únicos con newid válido","Suma de Importes monetarios")
+monto_anual
+```
+
+
+## Análisis de Progresividad de la política pública por municipio - Beneficios otorgados durante el 2017
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+
+# Para los beneficiarios con newid abajo de 500 millones
+query <- "SELECT cvemuni, sum(nuimpmonetario) as monto, count(distinct newid) as beneficiarios
+              FROM athena_pub.pub_nominal
+              WHERE anio=2017 AND cast(newid as integer) < 500000000
+              GROUP BY cvemuni"
+
+c(dinero_mun_validos,los_queries) := load_or_run(con,query,los_queries)
+colnames(dinero_mun_validos) <- c("cve_muni","cuenta", "num_beneficiarios")
+
+dinero_mun_validos <- dinero_mun_validos %>% 
+  left_join(coneval) %>% 
+  mutate(ben_pobla=cuenta/pob_tot, 
+         ben_pobr=cuenta/pobreza_num, 
+         prom_monto = cuenta/num_beneficiarios,
+         ben_entre_pob_total = num_beneficiarios/pob_tot,
+         ben_entre_pobreza = num_beneficiarios/pobreza_num) %>% 
+  arrange(cve_muni)
+
+geom_nal <- load_geom(con1,raw,geom_municipios,geom_col=geom,col_shape=cve_muni)
+
+municipios_nal <- geom_nal %>%
+  left_join(dinero_mun_validos)
+
+
+dinero_mun_validos %>% select(ent,cve_muni, municipio, prom_monto, ben_pobla, ben_pobr, ben_entre_pob_total, ben_entre_pobreza)
+
+```
+
+
+## Análisis de cobertura - (número de beneficiarios)
+
+```{r,echo=FALSE,message=FALSE, warning=FALSE}
+### Número de beneficiarios por municipio. 
+municipios_nal$num_beneficiarios_q <- quant_labels(municipios_nal$num_beneficiarios)
+ggplot() + 
+  geom_polygon(data = municipios_nal, aes(long, lat, group=group, fill=num_beneficiarios_q))+
+  labs(title="Número de beneficiarios con newid válido por municipio", fill="Número de Beneficiarios")+
+  scale_fill_brewer(na.value="grey") + 
+  coord_fixed()
+```
+
+
+
+```{r,echo=FALSE,message=FALSE, warning=FALSE}
+### Número de beneficiarios entre la población total del municipio
+municipios_nal$ben_entre_pob_total_q <- quant_labels(municipios_nal$ben_entre_pob_total)
+ggplot() + 
+  geom_polygon(data = municipios_nal, aes(long, lat, group=group, fill=ben_entre_pob_total_q)) +
+  labs(title="Tasa de Beneficiarios con newid válido por población total en el municipio", fill="Tasa de Cobertura") +
+  scale_fill_brewer(na.value="grey") + 
+  coord_fixed()
+```
+
+
+```{r,echo=FALSE,message=FALSE, warning=FALSE}
+### Número de beneficiarios entre población en situación de pobreza en el municipio
+municipios_nal$ben_entre_pobreza_q <- quant_labels(municipios_nal$ben_entre_pobreza)
+ggplot() + 
+  geom_polygon(data = municipios_nal, aes(long, lat, group=group, fill=ben_entre_pobreza_q)) +
+  labs(title="Tasa de beneficiarios con newid válido por población en situación de pobreza en el municipio", fill="Tasa de Cobertura") +
+  scale_fill_brewer(na.value="grey") + 
+  coord_fixed()
+
+```
+
+
+## Número total de beneficiarios y monto total de beneficios monetarios durante el 2017.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+query <- "SELECT count(distinct newid), sum(nuimpmonetario) as monto
+              FROM athena_pub.pub_nominal
+              WHERE anio=2017 AND cast(newid as integer) > 500000000"
+              
+c(monto_anual_invalidos,los_queries) := load_or_run(con,query,los_queries)
+colnames(monto_anual_invalidos) <- c("Número de Beneficiarios Únicos con newid inválido","Suma de Importes monetarios")
+monto_anual_invalidos
+```
+
+
+## Análisis de Progresividad de la política pública por municipio - Beneficios otorgados durante el 2017
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+
+# Para los beneficiarios con newid abajo de 500 millones
+query <- "SELECT cvemuni, sum(nuimpmonetario) as monto, count(distinct newid) as beneficiarios
+              FROM athena_pub.pub_nominal
+              WHERE anio=2017 AND cast(newid as integer) > 500000000
+              GROUP BY cvemuni"
+
+c(dinero_mun_invalidos,los_queries) := load_or_run(con,query,los_queries)
+colnames(dinero_mun_invalidos) <- c("cve_muni","cuenta", "num_beneficiarios")
+
+dinero_mun_invalidos <- dinero_mun_invalidos %>% 
+  left_join(coneval) %>% 
+  mutate(ben_pobla=cuenta/pob_tot, 
+         ben_pobr=cuenta/pobreza_num, 
+         prom_monto = cuenta/num_beneficiarios,
+         ben_entre_pob_total = num_beneficiarios/pob_tot,
+         ben_entre_pobreza = num_beneficiarios/pobreza_num) %>% 
+  arrange(cve_muni)
+
+municipios_nal <- geom_nal %>%
+  left_join(dinero_mun_invalidos)
+
+
+dinero_mun_invalidos %>% select(ent,cve_muni, municipio, prom_monto, ben_pobla, ben_pobr, ben_entre_pob_total, ben_entre_pobreza)
+
+```
+
+
+## Análisis de cobertura - (número de beneficiarios)
+
+```{r,echo=FALSE,message=FALSE, warning=FALSE}
+### Número de beneficiarios por municipio. 
+municipios_nal$num_beneficiarios_q <- quant_labels(municipios_nal$num_beneficiarios)
+ggplot() + 
+  geom_polygon(data = municipios_nal, aes(long, lat, group=group, fill=num_beneficiarios_q))+
+  labs(title="Número de beneficiarios con newid inválido por municipio", fill="Número de Beneficiarios")+
+  scale_fill_brewer(na.value="grey") + 
+  coord_fixed()
+```
+
+
+
+```{r,echo=FALSE,message=FALSE, warning=FALSE}
+### Número de beneficiarios entre la población total del municipio
+municipios_nal$ben_entre_pob_total_q <- quant_labels(municipios_nal$ben_entre_pob_total)
+ggplot() + 
+  geom_polygon(data = municipios_nal, aes(long, lat, group=group, fill=ben_entre_pob_total_q)) +
+  labs(title="Tasa de Beneficiarios con newid inválido por población total en el municipio", fill="Tasa de Cobertura") +
+  scale_fill_manual(values=colorRampPalette(c("white", "#191970"))( 30 ), na.value="grey") + 
+  coord_fixed()
+```
+
+
+```{r,echo=FALSE,message=FALSE, warning=FALSE}
+### Número de beneficiarios entre población en situación de pobreza en el municipio
+municipios_nal$ben_entre_pobreza_q <- quant_labels(municipios_nal$ben_entre_pobreza)
+ggplot() + 
+  geom_polygon(data = municipios_nal, aes(long, lat, group=group, fill=ben_entre_pobreza_q)) +
+  labs(title="Tasa de beneficiarios con newid inválido por población en situación de pobreza en el municipio", fill="Tasa de Cobertura") +
+  scale_fill_brewer(na.value="grey") + 
+  coord_fixed()
+
+```
