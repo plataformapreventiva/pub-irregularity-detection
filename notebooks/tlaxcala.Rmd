@@ -261,6 +261,78 @@ box_programa_anual <- ggplot(dinero_programa_anual, aes(x = cdprograma, y = mont
 box_programa_anual
 ```
 
+```{r,echo=FALSE,results='hide'}
+query <- "SELECT cdprograma, avg(nuimpmonetario) as media, stddev(nuimpmonetario) as std
+              FROM athena_pub.pub_nominal
+              WHERE cveent='29' AND anio=2017
+              GROUP BY cdprograma"
+              
+c(estadisticos_tla,los_queries) := load_or_run(con,query,los_queries)
+estadisticos_tla
+```
+
+
+```{r,echo=FALSE,fig.width=25,fig.height=7}
+ggplot(estadisticos_tla, aes(x = as.factor(cdprograma),fill=cdprograma)) +
+  geom_boxplot(aes(
+      lower = media - std, 
+      upper = media + std, 
+      middle = media, 
+      ymin = media - 3*std, 
+      ymax = media + 3*std),
+    stat = "identity") +
+  theme(axis.text.x = element_text(angle = 45,size=25, hjust = 1),plot.title = element_text(size = 30, face = "bold"))
+
+
+box_programa_anual <- ggplot(dinero_programa_anual, aes(x = cdprograma, y = monto, fill=cdprograma)) +
+        geom_boxplot() +
+  theme(axis.text.x = element_text(angle = 45,size=25, hjust = 1),plot.title = element_text(size = 30, face = "bold"))+
+        scale_y_log10()
+box_programa_anual
+```
+
+
+
+```{r,echo=FALSE,results='hide'}
+query <- "SELECT cdprograma, monto, mean, std FROM
+          (SELECT cdprograma, avg(monto) as mean, stddev(monto) as std
+          FROM (SELECT cdprograma, sum(nuimpmonetario) as monto, newid
+              FROM athena_pub.pub_nominal
+              WHERE cveent='29' AND anio=2017
+              GROUP BY cdprograma, newid) first
+          GROUP BY cdprograma) stats
+          WHERE first.monto > stats.mean"
+
+query <- "SELECT cdprograma, monto, mean, std 
+         FROM (SELECT cdprograma, monto, avg(monto) as mean, stddev(monto) as std
+         FROM (SELECT cdprograma, sum(nuimpmonetario) as monto, newid
+          FROM athena_pub.pub_nominal
+          WHERE cveent='29' AND anio=2017
+          GROUP BY cdprograma,newid)
+         GROUP BY cdprograma,monto) stats
+         WHERE monto > stats.mean OR monto < stats.mean
+          GROUP BY cdprograma, monto,mean,std"
+
+              
+c(estadisticos_tla,los_queries) := load_or_run(con,query,los_queries)
+estadisticos_tla
+```
+
+
+```{r,echo=FALSE,fig.width=25,fig.height=7}
+ggplot(estadisticos_tla, aes(x = as.factor(cdprograma),fill=cdprograma)) +
+  geom_boxplot(aes(
+      lower = mean - std, 
+      upper = mean + std, 
+      middle = mean, 
+      ymin = mean - 3*std, 
+      ymax = mean + 3*std),
+    stat = "identity") +
+  theme(axis.text.x = element_text(angle = 45,size=25, hjust = 1),plot.title = element_text(size = 30, face = "bold"))
+```
+
+
+
 ### Contar el número de distintos newid, ver cuánto se les paga en total con municipio
 ```{r,results='hide'}
 query <- "SELECT cvemuni, count(distinct newid) as iden, cdprograma, sum(nuimpmonetario) as monto, cdbeneficio
