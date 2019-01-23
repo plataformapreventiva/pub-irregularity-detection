@@ -1,0 +1,429 @@
+---
+title: "Detección de irregularidades en el Padrón Único de Beneficiarios (Tlaxcala)"
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r, results='hide'}
+dotenv::load_dot_env("../.env")
+library(dbrsocial)
+```
+
+```{r, echo=FALSE, results='hide'}
+library(ggplot2)
+library(tidyverse)
+library(plyr)
+library(dplyr)
+library(scales)
+library(maptools)
+library(rgdal)
+library(ggmap)
+library(gridExtra)
+library(rgdal)
+library(Hmisc)
+library(rgeos)
+library(sp)
+library(sf)
+library(rgeos)
+library(broom)
+library(scales)
+
+library(rangeMapper)
+library(ggmap)
+library(plotly)
+```
+
+```{r, echo=FALSE}
+### DB conections
+con <- pub_connect(s3dir = Sys.getenv("S3_DIR"), schema = Sys.getenv("SCHEMA"))
+```
+
+```{r,echo=FALSE}
+### Dejamos esta función porque por alguna razón no se carga al instalar el paquete ):
+load_query <- function(connection,schema,the_table,columns="*",options=""){
+    the_query <- "SELECT %s FROM %s.%s"
+    complete <- paste0(the_query," ",options)
+    schema    <- deparse(substitute(schema))
+    the_table <- deparse(substitute(the_table))
+    initial <- RPostgreSQL::dbSendQuery(connection,
+                             sprintf(complete,columns,schema,the_table))
+}
+
+load_geom <- function(connection,schema,the_table,columns="cve_mun, cve_ent, cve_muni, ", geom_col, col_shape, options=""){
+    geom_col <- deparse(substitute(geom_col))
+    schema    <- deparse(substitute(schema))
+    the_table <- deparse(substitute(the_table))
+    col_shape <- deparse(substitute(col_shape))
+
+    the_query <- "SELECT %s FROM %s.%s"
+    geom_col_as <- sprintf("ST_AsText(%s) as geom",geom_col)
+    columns <- paste0(columns,geom_col_as)
+    complete <- paste0(the_query," ",options)
+
+    initial <- RPostgreSQL::dbSendQuery(connection,
+                             sprintf(complete,columns,schema,the_table)) %>%
+    retrieve_result()
+
+    mun_shp = WKT2SpatialPolygonsDataFrame(initial, geom = geom_col, id = col_shape)
+    mun_df <- fortify(mun_shp, region = col_shape)
+    names(mun_df)[names(mun_df)=="id"] <- col_shape
+
+    return(mun_df)
+}
+
+```
+
+
+```{r, echo=FALSE, results='hide'}
+### Catálogo de queries
+los_queries <- query_dic()
+```
+
+```{r, echo=FALSE, results='hide'}
+### Catálogo de Beneficios
+catalogo_beneficios <- csv_s3()
+colnames(catalogo_beneficios) <- c("cd_beneficio","nb_beneficio")
+catalogo_beneficios
+```
+
+
+### Cargamos las geometrías de Tlaxcala y la información por municipios de CONEVAL
+```{r}
+con1 <- prev_connect()
+
+options <- "WHERE cve_ent = '29'"
+geom_tlax <- load_geom(con1,raw,geom_municipios,geom_col=geom,col_shape=cve_muni,options=options)
+coneval <- load_table(con1,clean,coneval_municipios) %>% retrieve_result()
+```
+ 
+### Creamos una tabla de CONEVAL con sólo la información de Tlaxcala
+```{r}
+coneval_tlaxcala <- coneval[(coneval$ent == "29" & coneval$data_date == "2015-a"),]
+```
+
+### Revisamos el número de beneficiarios en Tlaxcala por municipio en 2017
+```{r}
+query <- "SELECT cvemuni, count(distinct newid) as cuenta
+          FROM athena_pub.pub_nominal
+          WHERE cveent='29' AND anio=2017
+          GROUP BY cvemuni
+          ORDER BY cuenta DESC"
+
+c(ben_tlax,los_queries) := load_or_run(con,query,los_queries)
+colnames(ben_tlax) <- c("cve_muni","cuenta")
+ben_tlax$cve_muni <- as.character(ben_tlax$cve_muni)
+cuentas <- ben_tlax
+cuentas
+```
+
+```{r, echo=FALSE, results='hide'}
+los_estados <- read_csv("../estados.csv")
+colnames(los_estados) <- c("num","id","pagos","distintos")
+```
+
+### Graficamos el número de beneficiarios por municipio
+```{r,echo=FALSE,fig.width=25,fig.height=7}
+municipios_tlax <- coneval_tlaxcala %>%
+  left_join(cuentas)
+
+ggplot(data=municipios_tlax, aes(x=municipio, y=cuenta)) +
+  geom_bar(stat="identity") +
+  labs(title="Número de beneficiarios por municipio", fill="Número de beneficiarios",y="Beneficiarios únicos") +
+  scale_y_continuous(labels = comma,breaks = pretty_breaks(n = 6)) +
+  theme(axis.text.x = element_text(angle = 45,size=5, hjust = 1),plot.title = element_text(size = 20, face = "bold"))
+```
+
+```{r,echo=FALSE,fig.width=20,fig.height=12}
+edos <- geom_tlax %>%
+  left_join(cuentas)
+
+ggplot() + 
+  geom_polygon(data = edos, aes(long, lat, group=group, fill=cuenta))+
+  labs(title="Número de beneficiarios por municipio", fill="Número de beneficiarios")+
+  coord_map(projection="mercator") +
+  scale_fill_continuous(labels = comma,breaks = pretty_breaks(n = 6)) +
+  theme(axis.text.x = element_text(angle = 45,size=5, hjust = 1),plot.title = element_text(size = 30, face = "bold")) +
+  coord_fixed()
+```
+
+### Revisamos el número de beneficiarios por habitantes y habitantes en pobreza
+#### Por población total
+```{r,echo=FALSE,fig.width=25,fig.height=7}
+municipios_tlax <- mutate(municipios_tlax,ben_pobla=cuenta/pob_tot) %>%
+  mutate(ben_pobr=cuenta/pobreza_num)
+
+
+ggplot(data=municipios_tlax, aes(x=municipio, y=ben_pobla)) +
+  geom_bar(stat="identity") +
+  labs(title="Número de beneficiarios por habitantes en cada municipio", fill="Número de beneficiarios por habitantes",y="Beneficiarios únicos por habitantes") +
+  scale_y_continuous(labels = comma,breaks = pretty_breaks(n = 6)) +
+  theme(axis.text.x = element_text(angle = 45,size=5, hjust = 1),plot.title = element_text(size = 30, face = "bold")) 
+```
+
+```{r,echo=FALSE,fig.width=20,fig.height=12}
+edos <- geom_tlax %>%
+  left_join(municipios_tlax)
+
+ggplot() + 
+  geom_polygon(data = edos, aes(long, lat, group=group, fill=ben_pobla))+
+  labs(title="Número de beneficiarios por habitantes en cada municipio", fill="Número de beneficiarios por habitantes")+
+  coord_map(projection="mercator") +
+  theme(axis.text.x = element_text(angle = 45,size=25, hjust = 1),plot.title = element_text(size = 30, face = "bold"))+
+  scale_fill_continuous(labels = comma,breaks = pretty_breaks(n = 10)) +
+  coord_fixed()
+```
+
+#### Por población en pobreza
+```{r,echo=FALSE,fig.width=25,fig.height=7}
+ggplot(data=municipios_tlax, aes(x=municipio, y=ben_pobr)) +
+  geom_bar(stat="identity") +
+  labs(title="Número de beneficiarios por habitantes en pobreza por municipio", fill="Número de beneficiarios por habitantes en pobreza",y="Beneficiarios únicos por habitantes en pobreza") +
+  scale_y_continuous(labels = comma,breaks = pretty_breaks(n = 6)) +
+  theme(axis.text.x = element_text(angle = 45,size=25, hjust = 1),plot.title = element_text(size = 30, face = "bold"))
+```
+
+
+
+```{r,echo=FALSE,fig.width=20,fig.height=12}
+ggplot() + 
+  geom_polygon(data = edos, aes(long, lat, group=group, fill=ben_pobr))+
+  labs(title="Número de beneficiarios por habitantes en pobreza por municipio", fill="Número de beneficiarios por habitantes en pobreza",y="Beneficiarios únicos por habitantes en pobreza") +
+  coord_map(projection="mercator") +
+  scale_fill_continuous(labels = comma,breaks = pretty_breaks(n = 8)) +
+  theme(axis.text.x = element_text(angle = 45,size=25, hjust = 1),plot.title = element_text(size = 30, face = "bold"))
+  coord_fixed()
+```
+
+
+
+### Distribución de pago por programa
+```{r,echo=FALSE,results='hide'}
+query <- "SELECT cdprograma, nuimpmonetario
+              FROM athena_pub.pub_nominal
+              WHERE cveent='29'"
+              
+c(dinero_programa,los_queries) := load_or_run(con,query,los_queries)
+dinero_programa
+```
+
+```{r,echo=FALSE,fig.width=25,fig.height=7}
+box_programa <- ggplot(dinero_programa, aes(x = cdprograma, y = nuimpmonetario, fill=cdprograma)) +
+        geom_boxplot() +
+        labs(title="Distribución de pagos", fill="Número de beneficiarios por habitantes en pobreza",y="Beneficiarios únicos por habitantes en pobreza") +
+  theme(axis.text.x = element_text(angle = 45,size=25, hjust = 1),plot.title = element_text(size = 30, face = "bold"))+
+        scale_y_log10()
+box_programa
+```
+
+
+
+### Distribución de pago por programa mensual
+```{r,echo=FALSE,results='hide'}
+query <- "SELECT anio, numespago, cdprograma, sum(nuimpmonetario) as monto, newid
+              FROM athena_pub.pub_nominal
+              WHERE cveent='29'
+              GROUP BY anio, newid, numespago, cdprograma"
+              
+c(dinero_programa_mensual,los_queries) := load_or_run(con,query,los_queries)
+dinero_programa_mensual
+```
+
+
+```{r,echo=FALSE,fig.width=25,fig.height=7}
+box_programa_mensual <- ggplot(dinero_programa_mensual, aes(x = cdprograma, y = monto, fill=cdprograma)) +
+        geom_boxplot() +
+        theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  theme(axis.text.x = element_text(angle = 45,size=25, hjust = 1),plot.title = element_text(size = 30, face = "bold"))+
+        scale_y_log10()
+box_programa_mensual
+```
+
+
+### Distribución de pago por programa anual
+
+```{r,echo=FALSE,results='hide'}
+query <- "SELECT anio, cdprograma, sum(nuimpmonetario) as monto, newid
+              FROM athena_pub.pub_nominal
+              WHERE cveent='29'
+              GROUP BY anio, cdprograma, newid"
+              
+c(dinero_programa_anual,los_queries) := load_or_run(con,query,los_queries)
+dinero_programa_anual
+```
+
+
+```{r,echo=FALSE,fig.width=25,fig.height=7}
+box_programa_anual <- ggplot(dinero_programa_anual, aes(x = cdprograma, y = monto, fill=cdprograma)) +
+        geom_boxplot() +
+  theme(axis.text.x = element_text(angle = 45,size=25, hjust = 1),plot.title = element_text(size = 30, face = "bold"))+
+        scale_y_log10()
+box_programa_anual
+```
+
+```{r,echo=FALSE,results='hide'}
+query <- "SELECT cdprograma, avg(nuimpmonetario) as media, stddev(nuimpmonetario) as std
+              FROM athena_pub.pub_nominal
+              WHERE cveent='29' AND anio=2017
+              GROUP BY cdprograma"
+              
+c(estadisticos_tla,los_queries) := load_or_run(con,query,los_queries)
+estadisticos_tla
+```
+
+
+```{r,echo=FALSE,fig.width=25,fig.height=7}
+ggplot(estadisticos_tla, aes(x = as.factor(cdprograma),fill=cdprograma)) +
+  geom_boxplot(aes(
+      lower = media - std, 
+      upper = media + std, 
+      middle = media, 
+      ymin = media - 3*std, 
+      ymax = media + 3*std),
+    stat = "identity") +
+  theme(axis.text.x = element_text(angle = 45,size=25, hjust = 1),plot.title = element_text(size = 30, face = "bold"))
+
+
+box_programa_anual <- ggplot(dinero_programa_anual, aes(x = cdprograma, y = monto, fill=cdprograma)) +
+        geom_boxplot() +
+  theme(axis.text.x = element_text(angle = 45,size=25, hjust = 1),plot.title = element_text(size = 30, face = "bold"))+
+        scale_y_log10()
+box_programa_anual
+```
+
+
+
+```{r,echo=FALSE,results='hide'}
+query <- "SELECT cdprograma, monto, mean, std FROM
+          (SELECT cdprograma, avg(monto) as mean, stddev(monto) as std
+          FROM (SELECT cdprograma, sum(nuimpmonetario) as monto, newid
+              FROM athena_pub.pub_nominal
+              WHERE cveent='29' AND anio=2017
+              GROUP BY cdprograma, newid) first
+          GROUP BY cdprograma) stats
+          WHERE first.monto > stats.mean"
+
+query <- "SELECT cdprograma, monto, mean, std 
+         FROM (SELECT cdprograma, monto, avg(monto) as mean, stddev(monto) as std
+         FROM (SELECT cdprograma, sum(nuimpmonetario) as monto, newid
+          FROM athena_pub.pub_nominal
+          WHERE cveent='29' AND anio=2017
+          GROUP BY cdprograma,newid)
+         GROUP BY cdprograma,monto) stats
+         WHERE monto > stats.mean OR monto < stats.mean
+          GROUP BY cdprograma, monto,mean,std"
+
+              
+c(estadisticos_tla,los_queries) := load_or_run(con,query,los_queries)
+estadisticos_tla
+```
+
+
+```{r,echo=FALSE,fig.width=25,fig.height=7}
+ggplot(estadisticos_tla, aes(x = as.factor(cdprograma),fill=cdprograma)) +
+  geom_boxplot(aes(
+      lower = mean - std, 
+      upper = mean + std, 
+      middle = mean, 
+      ymin = mean - 3*std, 
+      ymax = mean + 3*std),
+    stat = "identity") +
+  theme(axis.text.x = element_text(angle = 45,size=25, hjust = 1),plot.title = element_text(size = 30, face = "bold"))
+```
+
+
+
+### Contar el número de distintos newid, ver cuánto se les paga en total con municipio
+```{r,results='hide'}
+query <- "SELECT cvemuni, count(distinct newid) as iden, cdprograma, sum(nuimpmonetario) as monto, cdbeneficio
+              FROM athena_pub.pub_nominal
+              WHERE cveent='29'
+              GROUP BY cdprograma, cdbeneficio, cvemuni"
+
+              
+c(num_per,los_queries) := load_or_run(con,query,los_queries)
+```
+
+### Suma de pagos por distintas personas
+```{r,echo=FALSE}
+query <- "SELECT cvemuni, count(distinct newid) as iden, sum(nuimpmonetario) as monto
+              FROM athena_pub.pub_nominal
+              WHERE cveent='29'
+              GROUP BY cvemuni"
+
+c(pago_por_persona,los_queries) := load_or_run(con,query,los_queries)
+pago_por_persona <- mutate(pago_por_persona,ratio=monto/iden)
+```
+
+```{r,echo=FALSE,fig.width=20,fig.height=12}
+colnames(pago_por_persona)[which(names(pago_por_persona) == "cvemuni")] <- "cve_muni"
+pago_por_persona$cve_muni <- as.character(pago_por_persona$cve_muni)
+
+edos <- geom_tlax %>%
+  left_join(pago_por_persona)
+
+ggplot() + 
+  geom_polygon(data = edos, aes(long, lat, group=group, fill=ratio))+
+  labs(title="Suma de montos pagados por municipio", fill="monto")+
+  theme(axis.text.x = element_text(angle = 45,size=25, hjust = 1),plot.title = element_text(size = 30, face = "bold"))+
+  coord_map(projection="mercator") +
+  coord_fixed()
+```
+
+
+
+
+
+
+### Montos pagados por municipio en 2017
+```{r,echo=FALSE}
+query <- "SELECT cvemuni, sum(nuimpmonetario) as monto
+              FROM athena_pub.pub_nominal
+              WHERE anio=2017
+              GROUP BY cvemuni"
+              
+c(dinero_mun,los_queries) := load_or_run(con,query,los_queries)
+colnames(dinero_mun) <- c("cve_muni","cuenta")
+dinero_mun
+```
+
+```{r,echo=FALSE,fig.width=20,fig.height=12}
+geom_nal <- load_geom(con1,raw,geom_municipios,geom_col=geom,col_shape=cve_muni)
+
+municipios_nal <- geom_nal %>%
+  left_join(dinero_mun) %>%
+  left_join(coneval)
+
+ggplot() + 
+  geom_polygon(data = municipios_nal, aes(long, lat, group=group, fill=cuenta))+
+  labs(title="Suma de montos pagados por municipio", fill="monto")+
+  theme(axis.text.x = element_text(angle = 45,size=25, hjust = 1),plot.title = element_text(size = 30, face = "bold"))+
+  scale_fill_continuous(labels = comma,breaks = pretty_breaks(n = 8)) +
+  coord_fixed()
+```
+
+### Montos pagados por número de beneficiarios entre la población total
+```{r,echo=FALSE,fig.width=20,fig.height=12}
+municipios_nal <- mutate(municipios_nal,ben_pobla=cuenta/pob_tot) %>%
+  mutate(ben_pobr=cuenta/pobreza_num)
+ 
+ggplot() + 
+  geom_polygon(data = municipios_nal, aes(long, lat, group=group, fill=ben_pobla))+
+  labs(title="Suma de montos pagados por persona por municipio", fill="monto")+
+  theme(axis.text.x = element_text(angle = 45,size=25, hjust = 1),plot.title = element_text(size = 30, face = "bold"))+
+  scale_fill_continuous(labels = comma,breaks = pretty_breaks(n = 8)) +
+  coord_fixed()
+```
+
+### Montos pagados por número de beneficiarios entre la población en pobreza
+```{r,echo=FALSE,fig.width=20,fig.height=12}
+ggplot() + 
+  geom_polygon(data = municipios_nal, aes(long, lat, group=group, fill=ben_pobr))+
+  labs(title="Suma de montos pagados por personas en pobreza por municipio", fill="monto")+
+  theme(axis.text.x = element_text(angle = 45,size=25, hjust = 1),plot.title = element_text(size = 30, face = "bold"))+
+  scale_fill_continuous(labels = comma,breaks = pretty_breaks(n = 8)) +
+  coord_fixed()
+```
+
+
+

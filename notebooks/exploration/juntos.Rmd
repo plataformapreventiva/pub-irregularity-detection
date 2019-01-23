@@ -1,0 +1,760 @@
+---
+title: "Caso de programas con poblacion de la Encuesta Intercensal"
+author: "Ollin Demian"
+date: "7/23/2018"
+output:
+  html_document:
+    df_print: paged
+---
+
+## Los datos por muncipio son tomados de la encuesta intercensal
+
+```{r, echo=FALSE, results='hide', include=FALSE}
+dotenv::load_dot_env("../.env")
+paquetines <- c("dbrsocial","ggplot2","tidyverse","plyr","scales",
+                "maptools","rgdal","ggmap","gridExtra","rgdal",
+                "Hmisc","rgeos","sp","sf","rgeos","broom","scales",
+                "rangeMapper","ggmap","plotly","viridis")
+no_instalados <- paquetines[!(paquetines %in% installed.packages()[,"Package"])]
+if(length(no_instalados)) install.packages(no_instalados)
+lapply(paquetines, library, character.only = TRUE)
+```
+
+```{r, echo=FALSE, results='hide', include=FALSE, message=FALSE, warning=FALSE}
+### DB conections
+con <- pub_connect(s3dir = Sys.getenv("S3_DIR"), schema = Sys.getenv("SCHEMA"))
+con1 <- prev_connect()
+```
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+### Catálogo de queries y la información por municipios de CONEVAL
+catalogo_beneficios <- csv_s3()
+colnames(catalogo_beneficios) <- c("cdbeneficio","nbbeneficio")
+
+los_estados <- read_csv("../estados.csv")
+colnames(los_estados) <- c("cveent","name","pagos","distintos")
+
+los_queries <- query_dic()
+
+intercensal <- load_table(con1,public,poblacion_intercensal_mun_2015) %>% retrieve_result()
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# Para los beneficiarios con newid abajo de 500 millones
+query <- "SELECT cvemuni, sum(nuimpmonetario) as monto, count(distinct newid) as beneficiarios
+              FROM athena_pub.pub_public
+              WHERE anio=2017 AND cast(newid as integer) < 500000000
+              GROUP BY cvemuni"
+
+c(dinero_mun_validos,los_queries) := load_or_run(con,query,los_queries)
+colnames(dinero_mun_validos) <- c("cve_muni","cuenta", "num_beneficiarios")
+
+dinero_mun_validos <- dinero_mun_validos %>%
+  left_join(intercensal) %>%
+  mutate(ben_pobla=cuenta/poblacion,
+         ben_entre_pob_total = num_beneficiarios/poblacion) %>%
+  arrange(cve_muni)
+
+geom_nal <- load_geom(con1,raw,geom_municipios_old,geom_col=geom,col_shape=cve_muni)
+
+municipios_nal <- geom_nal %>%
+  left_join(dinero_mun_validos)
+
+
+dinero_mun_validos %>% select(cve_muni, ben_pobla,
+                              ben_entre_pob_total)
+
+```
+
+```{r,echo=FALSE,message=FALSE, warning=FALSE}
+### Número de beneficiarios por municipio.
+municipios_nal$num_beneficiarios_q <- quant_labels(municipios_nal$num_beneficiarios)
+ggplot() +
+  geom_polygon(data = municipios_nal, aes(long, lat, group=group, fill=num_beneficiarios_q))+
+  labs(title="Número de beneficiarios con newid válido por municipio", fill="Número de Beneficiarios")+
+  scale_fill_brewer(na.value="grey") +
+  coord_fixed()
+ggsave("/home/ollin18/imagenes-pub/ben-mun-val.png")
+```
+
+
+```{r,echo=FALSE,message=FALSE, warning=FALSE}
+### Número de beneficiarios entre la población total del municipio
+municipios_nal$ben_entre_pob_total_q <- quant_labels(municipios_nal$ben_entre_pob_total,8)
+ggplot() +
+  geom_polygon(data = municipios_nal, aes(long, lat, group=group, fill=ben_entre_pob_total_q)) +
+  labs(title="Tasa de Beneficiarios con newid válido por población total en el municipio", fill="Tasa de Cobertura") +
+  scale_fill_brewer(na.value="grey") +
+  coord_fixed()
+ggsave("/home/ollin18/imagenes-pub/ben-mun-val-tasa.png")
+```
+
+
+
+
+#### Para el caso de newid superios a los 500 millones
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+query <- "SELECT count(distinct newid), sum(nuimpmonetario) as monto
+              FROM athena_pub.pub_public
+              WHERE anio=2017 AND cast(newid as integer) > 500000000"
+
+c(monto_anual_invalidos,los_queries) := load_or_run(con,query,los_queries)
+colnames(monto_anual_invalidos) <- c("Número de Beneficiarios Únicos con newid inválido","Suma de Importes monetarios")
+```
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# Para los beneficiarios con newid arriba de 500 millones
+query <- "SELECT cvemuni, sum(nuimpmonetario) as monto, count(distinct newid) as beneficiarios
+              FROM athena_pub.pub_public
+              WHERE anio=2017 AND cast(newid as integer) > 500000000
+              GROUP BY cvemuni"
+
+c(dinero_mun_invalidos,los_queries) := load_or_run(con,query,los_queries)
+colnames(dinero_mun_invalidos) <- c("cve_muni","cuenta", "num_beneficiarios")
+
+dinero_mun_invalidos <- dinero_mun_invalidos %>%
+  left_join(intercensal) %>%
+  mutate(ben_pobla=cuenta/poblacion,
+         ben_entre_pob_total = num_beneficiarios/poblacion) %>%
+  arrange(cve_muni)
+
+municipios_nal <- geom_nal %>%
+  left_join(dinero_mun_invalidos)
+```
+
+
+## Análisis de cobertura - (número de beneficiarios)
+
+```{r,echo=FALSE,message=FALSE, warning=FALSE}
+### Número de beneficiarios por municipio.
+municipios_nal$num_beneficiarios_q <- quant_labels(municipios_nal$num_beneficiarios)
+ggplot() +
+  geom_polygon(data = municipios_nal, aes(long, lat, group=group, fill=num_beneficiarios_q))+
+  labs(title="Número de beneficiarios con newid inválido por municipio", fill="Número de Beneficiarios")+
+  scale_fill_brewer(na.value="grey") +
+  coord_fixed()
+ggsave("/home/ollin18/imagenes-pub/ben-mun-inv.png")
+```
+
+
+```{r,echo=FALSE,message=FALSE, warning=FALSE}
+### Número de beneficiarios entre la población total del municipio
+municipios_nal$ben_entre_pob_total_q <- quant_labels(municipios_nal$ben_entre_pob_total)
+
+ggplot() +
+  geom_polygon(data = municipios_nal, aes(long, lat, group=group, fill=ben_entre_pob_total_q)) +
+  labs(title="Tasa de Beneficiarios con newid inválido por población total en el municipio", fill="Tasa de Cobertura") +
+  scale_fill_brewer(na.value="grey") +
+  coord_fixed()
+ggsave("/home/ollin18/imagenes-pub/ben-mun-inv-tasa.png")
+```
+
+
+# Distribución de pagos
+
+```{r,echo=FALSE,results='hide',message=FALSE, warning=FALSE}
+query <- "WITH los_montos AS (SELECT cveent, newid, sum(nuimpmonetario) as monto
+          FROM athena_pub.pub_public
+          WHERE anio=2017 AND cast(newid as integer) < 500000000
+          GROUP BY cveent, newid),
+
+          los_valores AS (SELECT cveent, avg(monto) as media, approx_percentile(monto,0.25) as q1,
+                  approx_percentile(monto,0.5) as q2, approx_percentile(monto,0.75) as q3,
+                  stddev(monto) as std, array_agg(monto) as valores
+          FROM los_montos
+          GROUP BY cveent),
+
+          los_rangos AS (SELECT cveent, media, q1, q2, q3,  std, abs(q3)-abs(q1) as IQR, filter(valores, x -> x IS NOT NULL) as nonull
+          FROM los_valores)
+
+          SELECT cveent, media, q1, q2, q3, std,
+          array_union(filter(nonull, x -> x > q3+1.5*IQR),filter(nonull, x -> x < q1-1.5*IQR)) as outliers,
+          array_min(array_intersect(filter(nonull,x -> x > q3),filter(nonull,x -> x < q3+1.5*IQR))) as max,
+          array_max(array_intersect(filter(nonull,x -> x < q1),filter(nonull,x -> x > q1-1.5*IQR))) as min
+          FROM los_rangos"
+
+c(estadisticos_prospera_validos,los_queries) := load_or_run(con,query,los_queries)
+estadisticos_prospera_validos
+
+estadisticos_prospera_validos$cveent <- as.integer(estadisticos_prospera_validos$cveent)
+estadisticos_prospera_validos <- estadisticos_prospera_validos %>%
+  left_join(los_estados)
+estadisticos_prospera_validos$outliers <- gsub('\\[|\\]','',estadisticos_prospera_validos$outliers) %>%
+  strsplit(., split=", ")
+estadisticos_prospera_validos$outliers <- lapply(estadisticos_prospera_validos$outliers,as.integer)
+
+all_values <-unnest(estadisticos_prospera_validos,outliers)
+```
+
+
+```{r,echo=FALSE,fig.width=25,fig.height=7,message=FALSE, warning=FALSE}
+ggplot(estadisticos_prospera_validos, aes(x = reorder(as.factor(name),q2))) +
+  geom_boxplot(aes(
+      lower = q1,
+      upper = q3,
+      middle = q2,
+      ymin = min,
+      ymax = max),
+    stat = "identity") +
+  geom_point(data=all_values, aes(x=reorder(as.factor(name),q2),y=outliers))+
+  labs(title="Distribución de pagos anuales por persona con newid válido por Entidad", x="Entidad", y="log10(Pesos)") +
+  theme(axis.text.x = element_text(angle = 45,size=15, hjust = 1),plot.title = element_text(size = 30, face = "bold"),
+        axis.text.y = element_text(size = 15))+
+  scale_y_log10(labels = scales::comma)
+ggsave("/home/ollin18/imagenes-pub/dist-ent-val.png")
+```
+
+
+## newid inválidos
+
+## Agregación por mes
+```{r,echo=FALSE,results='hide',message=FALSE, warning=FALSE}
+query <- "WITH los_montos AS (SELECT cveent, newid, sum(nuimpmonetario) as monto
+          FROM athena_pub.pub_public
+          WHERE anio=2017 AND cast(newid as integer) > 500000000
+          GROUP BY cveent, newid),
+
+          los_valores AS (SELECT cveent, avg(monto) as media, approx_percentile(monto,0.25) as q1,
+                  approx_percentile(monto,0.5) as q2, approx_percentile(monto,0.75) as q3,
+                  stddev(monto) as std, array_agg(monto) as valores
+          FROM los_montos
+          GROUP BY cveent),
+
+          los_rangos AS (SELECT cveent, media, q1, q2, q3,  std, abs(q3)-abs(q1) as IQR, filter(valores, x -> x IS NOT NULL) as nonull
+          FROM los_valores)
+
+          SELECT cveent, media, q1, q2, q3, std,
+          array_union(filter(nonull, x -> x > q3+1.5*IQR),filter(nonull, x -> x < q1-1.5*IQR)) as outliers,
+          array_min(array_intersect(filter(nonull,x -> x > q3),filter(nonull,x -> x < q3+1.5*IQR))) as max,
+          array_max(array_intersect(filter(nonull,x -> x < q1),filter(nonull,x -> x > q1-1.5*IQR))) as min
+          FROM los_rangos"
+
+
+c(estadisticos_prospera_inval,los_queries) := load_or_run(con,query,los_queries)
+
+estadisticos_prospera_inval$cveent <- as.integer(estadisticos_prospera_inval$cveent)
+estadisticos_prospera_inval <- estadisticos_prospera_inval %>%
+  left_join(los_estados)
+estadisticos_prospera_inval$outliers <- gsub('\\[|\\]','',estadisticos_prospera_inval$outliers) %>%
+  strsplit(., split=", ")
+estadisticos_prospera_inval$outliers <- lapply(estadisticos_prospera_inval$outliers,as.integer)
+
+all_values <-unnest(estadisticos_prospera_inval,outliers)
+```
+
+
+```{r,echo=FALSE,fig.width=25,fig.height=7,message=FALSE, warning=FALSE}
+ggplot(estadisticos_prospera_inval, aes(x = reorder(as.factor(name),q2))) +
+  geom_boxplot(aes(
+      lower = q1,
+      upper = q3,
+      middle = q2,
+      ymin = min,
+      ymax = max),
+    stat = "identity") +
+  geom_point(data=all_values, aes(x=reorder(as.factor(name),q2),y=outliers))+
+  labs(title="Distribución de pagos anuales por persona con newid inválido por Entidad", x="Entidad", y="log10(Pesos)") +
+  theme(axis.text.x = element_text(angle = 45,size=15, hjust = 1),plot.title = element_text(size = 30, face = "bold"))+
+  scale_y_log10(labels = scales::comma)
+ggsave("/home/ollin18/imagenes-pub/dist-ent-inv.png")
+```
+
+## Por programa
+### Para newid válidos
+```{r,echo=FALSE,results='hide',message=FALSE, warning=FALSE}
+query <- "WITH los_montos AS (SELECT cdprograma, newid, sum(nuimpmonetario) as monto
+          FROM athena_pub.pub_public
+          WHERE anio=2017 AND cast(newid as integer) < 500000000
+          GROUP BY cdprograma, newid),
+
+          los_valores AS (SELECT cdprograma, avg(monto) as media, approx_percentile(monto,0.25) as q1,
+                  approx_percentile(monto,0.5) as q2, approx_percentile(monto,0.75) as q3,
+                  stddev(monto) as std, array_agg(monto) as valores
+          FROM los_montos
+          GROUP BY cdprograma),
+
+          los_rangos AS (SELECT cdprograma, media, q1, q2, q3,  std, abs(q3)-abs(q1) as IQR, filter(valores, x -> x IS NOT NULL) as nonull
+          FROM los_valores)
+
+          SELECT cdprograma, media, q1, q2, q3, std,
+          array_union(filter(nonull, x -> x > q3+1.5*IQR),filter(nonull, x -> x < q1-1.5*IQR)) as outliers,
+          array_min(array_intersect(filter(nonull,x -> x > q3),filter(nonull,x -> x < q3+1.5*IQR))) as max,
+          array_max(array_intersect(filter(nonull,x -> x < q1),filter(nonull,x -> x > q1-1.5*IQR))) as min
+          FROM los_rangos"
+
+
+c(estadisticos_programas_val,los_queries) := load_or_run(con,query,los_queries)
+
+#estadisticos_programas_val <- estadisticos_programas_val %>%
+ # left_join(catalogo_beneficios)
+estadisticos_programas_val$outliers <- gsub('\\[|\\]','',estadisticos_programas_val$outliers) %>%
+  strsplit(., split=", ")
+estadisticos_programas_val$outliers <- lapply(estadisticos_programas_val$outliers,as.integer)
+estadisticos_programas_val$max[is.na(estadisticos_programas_val$max)] <- estadisticos_programas_val$q3[is.na(estadisticos_programas_val$max)]
+estadisticos_programas_val$min[is.na(estadisticos_programas_val$min)] <- estadisticos_programas_val$q1[is.na(estadisticos_programas_val$min)]
+#estadisticos_programas_val$nbbeneficio[is.na(estadisticos_programas_val$nbbeneficio)] <- as.character(estadisticos_programas_val$cdbeneficio[is.na(estadisticos_programas_val$nbbeneficio)])
+
+estadisticos_programas_val <- estadisticos_programas_val[!is.na(estadisticos_programas_val$media),]
+all_values <-unnest(estadisticos_programas_val,outliers)
+all_values$max[is.na(all_values$max)] <- all_values$q3[is.na(all_values$max)]
+all_values$min[is.na(all_values$min)] <- all_values$q3[is.na(all_values$min)]
+```
+
+
+```{r,echo=FALSE,fig.width=25,fig.height=7,message=FALSE, warning=FALSE}
+ggplot(estadisticos_programas_val, aes(x = reorder(as.factor(cdprograma),q2))) +
+  geom_boxplot(aes(
+      lower = q1,
+      upper = q3,
+      middle = q2,
+      ymin = min,
+      ymax = max),
+    stat = "identity") +
+  geom_point(data=all_values, aes(x=reorder(as.factor(cdprograma),q2),y=outliers))+
+  labs(title="Distribución de pagos en 2017 por programa para newid válido (beneficios monetarios)", x="Programa", y="log10(Pesos)") +
+  theme(axis.text.x = element_text(angle = 45,size=15, hjust = 1),plot.title = element_text(size = 30, face = "bold"))+
+  scale_y_log10(labels = scales::comma)
+ggsave("/home/ollin18/imagenes-pub/dist-programas-val.png")
+```
+
+
+### Para newid inválidos
+```{r,echo=FALSE,results='hide',message=FALSE, warning=FALSE}
+query <- "WITH los_montos AS (SELECT cdprograma, newid, sum(nuimpmonetario) as monto
+          FROM athena_pub.pub_public
+          WHERE anio=2017 AND cast(newid as integer) > 500000000
+          GROUP BY cdprograma, newid),
+
+          los_valores AS (SELECT cdprograma, avg(monto) as media, approx_percentile(monto,0.25) as q1,
+                  approx_percentile(monto,0.5) as q2, approx_percentile(monto,0.75) as q3,
+                  stddev(monto) as std, array_agg(monto) as valores
+          FROM los_montos
+          GROUP BY cdprograma),
+
+          los_rangos AS (SELECT cdprograma, media, q1, q2, q3,  std, abs(q3)-abs(q1) as IQR, filter(valores, x -> x IS NOT NULL) as nonull
+          FROM los_valores)
+
+          SELECT cdprograma, media, q1, q2, q3, std,
+          array_union(filter(nonull, x -> x > q3+1.5*IQR),filter(nonull, x -> x < q1-1.5*IQR)) as outliers,
+          array_min(array_intersect(filter(nonull,x -> x > q3),filter(nonull,x -> x < q3+1.5*IQR))) as max,
+          array_max(array_intersect(filter(nonull,x -> x < q1),filter(nonull,x -> x > q1-1.5*IQR))) as min
+          FROM los_rangos"
+
+
+c(estadisticos_programas_inv,los_queries) := load_or_run(con,query,los_queries)
+
+#estadisticos_programas_inv <- estadisticos_programas_inv %>%
+ # left_join(catalogo_beneficios)
+estadisticos_programas_inv$outliers <- gsub('\\[|\\]','',estadisticos_programas_inv$outliers) %>%
+  strsplit(., split=", ")
+estadisticos_programas_inv$outliers <- lapply(estadisticos_programas_inv$outliers,as.integer)
+estadisticos_programas_inv$max[is.na(estadisticos_programas_inv$max)] <- estadisticos_programas_inv$q3[is.na(estadisticos_programas_inv$max)]
+estadisticos_programas_inv$min[is.na(estadisticos_programas_inv$min)] <- estadisticos_programas_inv$q1[is.na(estadisticos_programas_inv$min)]
+#estadisticos_programas_inv$nbbeneficio[is.na(estadisticos_programas_inv$nbbeneficio)] <- as.character(estadisticos_programas_inv$cdbeneficio[is.na(estadisticos_programas_inv$nbbeneficio)])
+
+estadisticos_programas_inv <- estadisticos_programas_inv[!is.na(estadisticos_programas_inv$media),]
+all_values <-unnest(estadisticos_programas_inv,outliers)
+all_values$max[is.na(all_values$max)] <- all_values$q3[is.na(all_values$max)]
+all_values$min[is.na(all_values$min)] <- all_values$q3[is.na(all_values$min)]
+```
+
+
+```{r,echo=FALSE,fig.width=25,fig.height=7,message=FALSE, warning=FALSE}
+ggplot(estadisticos_programas_inv, aes(x = reorder(as.factor(cdprograma),q2))) +
+  geom_boxplot(aes(
+      lower = q1,
+      upper = q3,
+      middle = q2,
+      ymin = min,
+      ymax = max),
+    stat = "identity") +
+  geom_point(data=all_values, aes(x=reorder(as.factor(cdprograma),q2),y=outliers))+
+  labs(title="Distribución de pagos en 2017 por programa para newid inválido (beneficios monetarios)", x="Programa", y="log10(Pesos)") +
+  theme(axis.text.x = element_text(angle = 45,size=15, hjust = 1),plot.title = element_text(size = 30, face = "bold"))+
+  scale_y_log10(labels = scales::comma)
+ggsave("/home/ollin18/imagenes-pub/dist-programas-inv.png")
+```
+
+
+# Para prospeospera
+
+## Análisis Nacional por municipios
+
+
+## Número total de beneficiarios y monto total de beneficios monetarios durante el 2017.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+query <- "SELECT count(distinct newid), sum(nuimpmonetario) as monto
+              FROM athena_pub.pub_public
+              WHERE anio=2017 AND cast(newid as integer) < 500000000 AND cdprograma='S072'"
+
+c(monto_anual,los_queries) := load_or_run(con,query,los_queries)
+colnames(monto_anual) <- c("Número de Beneficiarios Únicos con newid válido","Suma de Importes monetarios")
+```
+
+
+## Análisis de Progresividad de la política pública por municipio - Beneficios otorgados durante el 2017
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# Para los beneficiarios con newid abajo de 500 millones
+query <- "SELECT cvemuni, sum(nuimpmonetario) as monto, count(distinct newid) as beneficiarios
+              FROM athena_pub.pub_public
+              WHERE anio=2017 AND cast(newid as integer) < 500000000 AND cdprograma='S072'
+              GROUP BY cvemuni"
+
+c(dinero_mun_validos,los_queries) := load_or_run(con,query,los_queries)
+colnames(dinero_mun_validos) <- c("cve_muni","cuenta", "num_beneficiarios")
+
+dinero_mun_validos <- dinero_mun_validos %>%
+  left_join(intercensal) %>%
+  mutate(ben_pobla=cuenta/poblacion,
+         ben_entre_pob_total = num_beneficiarios/poblacion) %>%
+  arrange(cve_muni)
+
+municipios_nal <- geom_nal %>%
+  left_join(dinero_mun_validos)
+
+
+dinero_mun_validos %>% select(cve_muni, ben_pobla, 
+                              ben_entre_pob_total)
+
+```
+
+
+## Análisis de cobertura - (número de beneficiarios)
+
+```{r,echo=FALSE,message=FALSE, warning=FALSE}
+### Número de beneficiarios por municipio.
+municipios_nal$num_beneficiarios_q <- quant_labels(municipios_nal$num_beneficiarios)
+ggplot() +
+  geom_polygon(data = municipios_nal, aes(long, lat, group=group, fill=num_beneficiarios_q))+
+  labs(title="Beneficiarios de Prospera con newid válido por municipio", fill="Número de Beneficiarios")+
+  scale_fill_brewer(na.value="grey") +
+  coord_fixed()
+ggsave("/home/ollin18/imagenes-pub/ben-prospera-val.png")
+```
+
+
+
+
+```{r,echo=FALSE,message=FALSE, warning=FALSE}
+### Número de beneficiarios entre la población total del municipio
+municipios_nal$ben_entre_pob_total_q <- quant_labels(municipios_nal$ben_entre_pob_total,8)
+ggplot() +
+  geom_polygon(data = municipios_nal, aes(long, lat, group=group, fill=ben_entre_pob_total_q)) +
+  labs(title="Tasa de Beneficiarios con newid válido por población total en el municipio", fill="Tasa de Cobertura") +
+  scale_fill_brewer(na.value="grey") +
+  coord_fixed()
+ggsave("/home/ollin18/imagenes-pub/ben-prospera-val-tasa.png")
+```
+
+### Municipios con cobertura superior al 100% de la población
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+above_valid <- dinero_mun_validos %>% select(cve_muni,ben_entre_pob_total)
+above_valid <- above_valid[order(-above_valid$ben_entre_pob_total),]
+above_valid <- above_valid[above_valid$ben_entre_pob_total>1,]
+above_valid
+#write.csv(above_valid,"../municipios_prospera_id_validos_mas_que_total.csv",row.names=FALSE)
+#write.csv()
+```
+
+## Número total de beneficiarios con newid no válido y monto total de beneficios monetarios durante el 2017.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+query <- "SELECT count(distinct newid), sum(nuimpmonetario) as monto
+              FROM athena_pub.pub_public
+              WHERE anio=2017 AND cast(newid as integer) > 500000000 AND cdprograma='S072'"
+
+c(monto_anual_invalidos,los_queries) := load_or_run(con,query,los_queries)
+colnames(monto_anual_invalidos) <- c("Número de Beneficiarios Únicos con newid inválido","Suma de Importes monetarios")
+monto_anual_invalidos
+```
+
+
+## Análisis para beneficiarios con id no válido
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+
+# Para los beneficiarios con newid arriba de 500 millones
+query <- "SELECT cvemuni, sum(nuimpmonetario) as monto, count(distinct newid) as beneficiarios
+              FROM athena_pub.pub_public
+              WHERE anio=2017 AND cast(newid as integer) > 500000000 AND cdprograma = 'S072'
+              GROUP BY cvemuni"
+
+c(dinero_mun_invalidos,los_queries) := load_or_run(con,query,los_queries)
+colnames(dinero_mun_invalidos) <- c("cve_muni","cuenta", "num_beneficiarios")
+
+dinero_mun_invalidos <- dinero_mun_invalidos %>%
+  left_join(intercensal) %>%
+  mutate(ben_pobla=cuenta/poblacion,
+         ben_entre_pob_total = num_beneficiarios/poblacion) %>%
+  arrange(cve_muni)
+
+municipios_nal <- geom_nal %>%
+  left_join(dinero_mun_invalidos)
+
+```
+
+
+## Análisis de cobertura - (número de beneficiarios)
+
+```{r,echo=FALSE,message=FALSE, warning=FALSE}
+### Número de beneficiarios por municipio.
+municipios_nal$num_beneficiarios_q <- quant_labels(municipios_nal$num_beneficiarios)
+ggplot() +
+  geom_polygon(data = municipios_nal, aes(long, lat, group=group, fill=num_beneficiarios_q))+
+  labs(title="Beneficiarios de Prospera con newid inválido por municipio", fill="Número de Beneficiarios")+
+  scale_fill_brewer(na.value="grey") +
+  coord_fixed()
+ggsave("/home/ollin18/imagenes-pub/ben-prospera-inv.png")
+```
+
+
+
+```{r,echo=FALSE,message=FALSE, warning=FALSE}
+### Número de beneficiarios entre la población total del municipio
+municipios_nal$ben_entre_pob_total_q <- quant_labels(municipios_nal$ben_entre_pob_total)
+
+ggplot() +
+  geom_polygon(data = municipios_nal, aes(long, lat, group=group, fill=ben_entre_pob_total_q)) +
+  labs(title="Tasa de beneficiarios de Prospera con newid inválido por población total en el municipio", fill="Tasa de Cobertura") +
+  scale_fill_brewer(na.value="grey") +
+  coord_fixed()
+ggsave("/home/ollin18/imagenes-pub/ben-prospera-inv.png")
+```
+
+
+
+# Distribución de Pagos
+
+# Por Estado
+## newid válidos
+```{r,echo=FALSE,results='hide',message=FALSE, warning=FALSE}
+query <- "WITH los_montos AS (SELECT cveent, newid, sum(nuimpmonetario) as monto
+          FROM athena_pub.pub_public
+          WHERE anio=2017 AND cast(newid as integer) < 500000000  AND cddependencia='20'
+          GROUP BY cveent, newid),
+          
+          los_valores AS (SELECT cveent, avg(monto) as media, approx_percentile(monto,0.25) as q1,
+                  approx_percentile(monto,0.5) as q2, approx_percentile(monto,0.75) as q3,
+                  stddev(monto) as std, array_agg(monto) as valores
+          FROM los_montos
+          GROUP BY cveent),
+
+          los_rangos AS (SELECT cveent, media, q1, q2, q3,  std, abs(q3)-abs(q1) as IQR, filter(valores, x -> x IS NOT NULL) as nonull
+          FROM los_valores)
+
+          SELECT cveent, media, q1, q2, q3, std,
+          array_union(filter(nonull, x -> x > q3+1.5*IQR),filter(nonull, x -> x < q1-1.5*IQR)) as outliers,
+          array_min(array_intersect(filter(nonull,x -> x > q3),filter(nonull,x -> x < q3+1.5*IQR))) as max,
+          array_max(array_intersect(filter(nonull,x -> x < q1),filter(nonull,x -> x > q1-1.5*IQR))) as min
+          FROM los_rangos"
+
+c(estadisticos_prospera_validos,los_queries) := load_or_run(con,query,los_queries)
+estadisticos_prospera_validos
+
+estadisticos_prospera_validos$cveent <- as.integer(estadisticos_prospera_validos$cveent)
+estadisticos_prospera_validos <- estadisticos_prospera_validos %>%
+  left_join(los_estados)
+estadisticos_prospera_validos$outliers <- gsub('\\[|\\]','',estadisticos_prospera_validos$outliers) %>%
+  strsplit(., split=", ")
+estadisticos_prospera_validos$outliers <- lapply(estadisticos_prospera_validos$outliers,as.integer)
+
+all_values <-unnest(estadisticos_prospera_validos,outliers)
+```
+
+
+```{r,echo=FALSE,fig.width=25,fig.height=7,message=FALSE, warning=FALSE}
+ggplot(estadisticos_prospera_validos, aes(x = reorder(as.factor(name),q2))) +
+  geom_boxplot(aes(
+      lower = q1, 
+      upper = q3, 
+      middle = q2, 
+      ymin = min, 
+      ymax = max),
+    stat = "identity") +
+  geom_point(data=all_values, aes(x=reorder(as.factor(name),q2),y=outliers))+
+  labs(title="Distribución de pagos de Prospera en 2017 por Entidad para newid válido (beneficios monetarios)", x="Entidad", y="log10(Pesos)") +
+  theme(axis.text.x = element_text(angle = 45,size=15, hjust = 1),plot.title = element_text(size = 20, face = "bold"))
+#+
+#  scale_y_log10(labels = scales::comma)
+#ggsave("/home/ollin18/imagenes-pub/dist-prospera-ent-val.png")
+```
+
+
+## newid inválidos
+
+```{r,echo=FALSE,results='hide',message=FALSE, warning=FALSE}
+query <- "WITH los_montos AS (SELECT cveent, newid, sum(nuimpmonetario) as monto
+          FROM athena_pub.pub_public
+          WHERE anio=2017 AND cast(newid as integer) > 500000000 AND cdprograma='S072'
+          GROUP BY cveent, newid),
+          
+          los_valores AS (SELECT cveent, avg(monto) as media, approx_percentile(monto,0.25) as q1,
+                  approx_percentile(monto,0.5) as q2, approx_percentile(monto,0.75) as q3,
+                  stddev(monto) as std, array_agg(monto) as valores
+          FROM los_montos
+          GROUP BY cveent),
+
+          los_rangos AS (SELECT cveent, media, q1, q2, q3,  std, abs(q3)-abs(q1) as IQR, filter(valores, x -> x IS NOT NULL) as nonull
+          FROM los_valores)
+
+          SELECT cveent, media, q1, q2, q3, std,
+          array_union(filter(nonull, x -> x > q3+1.5*IQR),filter(nonull, x -> x < q1-1.5*IQR)) as outliers,
+          array_min(array_intersect(filter(nonull,x -> x > q3),filter(nonull,x -> x < q3+1.5*IQR))) as max,
+          array_max(array_intersect(filter(nonull,x -> x < q1),filter(nonull,x -> x > q1-1.5*IQR))) as min
+          FROM los_rangos"
+
+              
+c(estadisticos_prospera_inval,los_queries) := load_or_run(con,query,los_queries)
+
+estadisticos_prospera_inval$cveent <- as.integer(estadisticos_prospera_inval$cveent)
+estadisticos_prospera_inval <- estadisticos_prospera_inval %>%
+  left_join(los_estados)
+estadisticos_prospera_inval$outliers <- gsub('\\[|\\]','',estadisticos_prospera_inval$outliers) %>%
+  strsplit(., split=", ")
+estadisticos_prospera_inval$outliers <- lapply(estadisticos_prospera_inval$outliers,as.integer)
+
+all_values <-unnest(estadisticos_prospera_inval,outliers)
+```
+
+
+```{r,echo=FALSE,fig.width=25,fig.height=7,message=FALSE, warning=FALSE}
+ggplot(estadisticos_prospera_inval, aes(x = reorder(as.factor(name),q2))) +
+  geom_boxplot(aes(
+      lower = q1, 
+      upper = q3, 
+      middle = q2, 
+      ymin = min, 
+      ymax = max),
+    stat = "identity") +
+  geom_point(data=all_values, aes(x=reorder(as.factor(name),q2),y=outliers))+
+  labs(title="Distribución de pagos de Prospera en 2017 por Entidad para newid inválido (beneficios monetarios)", x="Entidad", y="log10(Pesos)") +
+  theme(axis.text.x = element_text(angle = 45,size=15, hjust = 1),plot.title = element_text(size = 30, face = "bold"))+
+  scale_y_log10(labels = scales::comma)
+ggsave("/home/ollin18/imagenes-pub/dist-prospera-ent-inval.png")
+```
+
+
+## Por beneficios
+### Para newid válidos
+```{r,echo=FALSE,results='hide',message=FALSE, warning=FALSE}
+query <- "WITH los_montos AS (SELECT cdbeneficio, newid, sum(nuimpmonetario) as monto
+          FROM athena_pub.pub_public
+          WHERE anio=2017 AND cast(newid as integer) < 500000000 AND cdprograma='S072'
+          GROUP BY cdbeneficio, newid),
+          
+          los_valores AS (SELECT cdbeneficio, avg(monto) as media, approx_percentile(monto,0.25) as q1,
+                  approx_percentile(monto,0.5) as q2, approx_percentile(monto,0.75) as q3,
+                  stddev(monto) as std, array_agg(monto) as valores
+          FROM los_montos
+          GROUP BY cdbeneficio),
+
+          los_rangos AS (SELECT cdbeneficio, media, q1, q2, q3,  std, abs(q3)-abs(q1) as IQR, filter(valores, x -> x IS NOT NULL) as nonull
+          FROM los_valores)
+
+          SELECT cdbeneficio, media, q1, q2, q3, std,
+          array_union(filter(nonull, x -> x > q3+1.5*IQR),filter(nonull, x -> x < q1-1.5*IQR)) as outliers,
+          array_min(array_intersect(filter(nonull,x -> x > q3),filter(nonull,x -> x < q3+1.5*IQR))) as max,
+          array_max(array_intersect(filter(nonull,x -> x < q1),filter(nonull,x -> x > q1-1.5*IQR))) as min
+          FROM los_rangos"
+
+              
+c(estadisticos_prospera_ben_val,los_queries) := load_or_run(con,query,los_queries)
+
+estadisticos_prospera_ben_val <- estadisticos_prospera_ben_val %>%
+  left_join(catalogo_beneficios)
+estadisticos_prospera_ben_val$outliers <- gsub('\\[|\\]','',estadisticos_prospera_ben_val$outliers) %>%
+  strsplit(., split=", ")
+estadisticos_prospera_ben_val$outliers <- lapply(estadisticos_prospera_ben_val$outliers,as.integer)
+estadisticos_prospera_ben_val$max[is.na(estadisticos_prospera_ben_val$max)] <- estadisticos_prospera_ben_val$q3[is.na(estadisticos_prospera_ben_val$max)]
+estadisticos_prospera_ben_val$min[is.na(estadisticos_prospera_ben_val$min)] <- estadisticos_prospera_ben_val$q1[is.na(estadisticos_prospera_ben_val$min)]
+estadisticos_prospera_ben_val$nbbeneficio[is.na(estadisticos_prospera_ben_val$nbbeneficio)] <- as.character(estadisticos_prospera_ben_val$cdbeneficio[is.na(estadisticos_prospera_ben_val$nbbeneficio)])
+
+all_values <-unnest(estadisticos_prospera_ben_val,outliers)
+all_values$max[is.na(all_values$max)] <- all_values$q3[is.na(all_values$max)]
+all_values$min[is.na(all_values$min)] <- all_values$q3[is.na(all_values$min)]
+```
+
+
+```{r,echo=FALSE,fig.width=25,fig.height=7,message=FALSE, warning=FALSE}
+ggplot(estadisticos_prospera_ben_val, aes(x = reorder(as.factor(nbbeneficio),q2))) +
+  geom_boxplot(aes(
+      lower = q1, 
+      upper = q3, 
+      middle = q2, 
+      ymin = min, 
+      ymax = max),
+    stat = "identity") +
+  geom_point(data=all_values, aes(x=reorder(as.factor(nbbeneficio),q2),y=outliers))+
+  labs(title="Distribución de pagos de Prospera en 2017 por beneficio para newid válido (monetarios)", x="Beneficio", y="log10(Pesos)") +
+  theme(axis.text.x = element_text(angle = 45,size=15, hjust = 1),plot.title = element_text(size = 30, face = "bold"))+
+  scale_y_log10(labels = scales::comma)
+ggsave("/home/ollin18/imagenes-pub/dist-prospera-ben-val.png")
+```
+
+
+### newid inválidos
+```{r,echo=FALSE,results='hide',message=FALSE, warning=FALSE}
+query <- "WITH los_montos AS (SELECT cdbeneficio, newid, sum(nuimpmonetario) as monto
+          FROM athena_pub.pub_public
+          WHERE anio=2017 AND cast(newid as integer) > 500000000 AND cdprograma='S072'
+          GROUP BY cdbeneficio, newid),
+          
+          los_valores AS (SELECT cdbeneficio, avg(monto) as media, approx_percentile(monto,0.25) as q1,
+                  approx_percentile(monto,0.5) as q2, approx_percentile(monto,0.75) as q3,
+                  stddev(monto) as std, array_agg(monto) as valores
+          FROM los_montos
+          GROUP BY cdbeneficio),
+
+          los_rangos AS (SELECT cdbeneficio, media, q1, q2, q3,  std, abs(q3)-abs(q1) as IQR, filter(valores, x -> x IS NOT NULL) as nonull
+          FROM los_valores)
+
+          SELECT cdbeneficio, media, q1, q2, q3, std,
+          array_union(filter(nonull, x -> x > q3+1.5*IQR),filter(nonull, x -> x < q1-1.5*IQR)) as outliers,
+          array_min(array_intersect(filter(nonull,x -> x > q3),filter(nonull,x -> x < q3+1.5*IQR))) as max,
+          array_max(array_intersect(filter(nonull,x -> x < q1),filter(nonull,x -> x > q1-1.5*IQR))) as min
+          FROM los_rangos"
+
+              
+c(estadisticos_prospera_ben_inval,los_queries) := load_or_run(con,query,los_queries)
+
+estadisticos_prospera_ben_inval <- estadisticos_prospera_ben_inval %>%
+  left_join(catalogo_beneficios)
+estadisticos_prospera_ben_inval$outliers <- gsub('\\[|\\]','',estadisticos_prospera_ben_inval$outliers) %>%
+  strsplit(., split=", ")
+estadisticos_prospera_ben_inval$outliers <- lapply(estadisticos_prospera_ben_inval$outliers,as.integer)
+estadisticos_prospera_ben_inval$max[is.na(estadisticos_prospera_ben_inval$max)] <- estadisticos_prospera_ben_inval$q3[is.na(estadisticos_prospera_ben_inval$max)]
+estadisticos_prospera_ben_inval$min[is.na(estadisticos_prospera_ben_inval$min)] <- estadisticos_prospera_ben_inval$q1[is.na(estadisticos_prospera_ben_inval$min)]
+estadisticos_prospera_ben_inval$nbbeneficio[is.na(estadisticos_prospera_ben_inval$nbbeneficio)] <- as.character(estadisticos_prospera_ben_inval$cdbeneficio[is.na(estadisticos_prospera_ben_inval$nbbeneficio)])
+
+all_values <-unnest(estadisticos_prospera_ben_inval,outliers)
+all_values$max[is.na(all_values$max)] <- all_values$q3[is.na(all_values$max)]
+all_values$min[is.na(all_values$min)] <- all_values$q3[is.na(all_values$min)]
+```
+
+
+```{r,echo=FALSE,fig.width=25,fig.height=7,message=FALSE, warning=FALSE}
+ggplot(estadisticos_prospera_ben_inval, aes(x = reorder(as.factor(nbbeneficio),q2))) +
+  geom_boxplot(aes(
+      lower = q1, 
+      upper = q3, 
+      middle = q2, 
+      ymin = min, 
+      ymax = max),
+    stat = "identity") +
+  geom_point(data=all_values, aes(x=reorder(as.factor(nbbeneficio),q2),y=outliers))+
+  labs(title="Distribución de pagos de Prospera en 2017 por beneficio para newid válido (monetarios)", x="Beneficio", y="log10(Pesos)") +
+  theme(axis.text.x = element_text(angle = 45,size=15, hjust = 1),plot.title = element_text(size = 30, face = "bold"))+
+  scale_y_log10(labels = scales::comma)
+ggsave("/home/ollin18/imagenes-pub/dist-prospera-ben-inval.png")
+```
+
+
+
+
+
+

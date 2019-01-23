@@ -1,0 +1,606 @@
+---
+title: "Caso de Uso Prospera"
+output:
+  html_document:
+    df_print: paged
+---
+
+---
+title: "Caso de Uso Prospera"
+output:
+  html_document:
+    df_print: paged
+---
+
+# Introducción
+Este reporte presenta avances al análisis de detección de irregularidades en el Padrón Único de beneficiarios.
+
+# Limitaciones:
+- Los resultados de este reporte dependen en buena medida de la identificación única de los beneficiarios. Éste proceso, que terminará en la generación de un nuevo id único por beneficiario, está siendo desarrollado dentro del SISI y se espera su término a mediados de Agosto. Por esta razón, pueden existir duplicidades (beneficiarios contados como dos personas) lo que puede inflar el porcentaje de cobertura.
+
+```{r, echo=FALSE, results='hide', include=FALSE}
+dotenv::load_dot_env("../.env")
+library(dbrsocial)
+```
+
+```{r, echo=FALSE, results='hide', include=FALSE}
+library(ggplot2)
+library(tidyverse)
+library(plyr)
+library(dplyr)
+library(scales)
+library(maptools)
+library(rgdal)
+library(ggmap)
+library(gridExtra)
+library(rgdal)
+library(Hmisc)
+library(rgeos)
+library(sp)
+library(sf)
+library(rgeos)
+library(broom)
+library(scales)
+library(rangeMapper)
+library(ggmap)
+library(plotly)
+library(viridis)
+```
+
+```{r, echo=FALSE, results='hide', include=FALSE, message=FALSE, warning=FALSE}
+
+### DB conections
+con <- pub_connect(s3dir = Sys.getenv("S3_DIR"), schema = Sys.getenv("SCHEMA"))
+con1 <- prev_connect()
+```
+
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+### Catálogo de queries y la información por municipios de CONEVAL
+catalogo_beneficios <- csv_s3()
+colnames(catalogo_beneficios) <- c("cdbeneficio","nbbeneficio")
+
+los_estados <- read_csv("../estados.csv")
+colnames(los_estados) <- c("cveent","name","pagos","distintos")
+
+los_queries <- query_dic()
+coneval <- load_table(con1,clean,coneval_municipios) %>% retrieve_result() %>%
+  filter(data_date == "2015-a")
+```
+
+
+
+# Análisis Nacional por municipios
+
+
+## Número total de beneficiarios y monto total de beneficios monetarios durante el 2017.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+query <- "SELECT count(distinct newid), sum(nuimpmonetario) as monto
+              FROM athena_pub.pub_nominal
+              WHERE anio=2017 AND cast(newid as integer) < 500000000 AND cdprograma='S072'"
+
+c(monto_anual,los_queries) := load_or_run(con,query,los_queries)
+colnames(monto_anual) <- c("Número de Beneficiarios Únicos con newid válido","Suma de Importes monetarios")
+monto_anual
+```
+
+
+## Análisis de Progresividad de la política pública por municipio - Beneficios otorgados durante el 2017
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+
+# Para los beneficiarios con newid abajo de 500 millones
+query <- "SELECT cvemuni, sum(nuimpmonetario) as monto, count(distinct newid) as beneficiarios
+              FROM athena_pub.pub_nominal
+              WHERE anio=2017 AND cast(newid as integer) < 500000000 AND cdprograma='S072'
+              GROUP BY cvemuni"
+
+c(dinero_mun_validos,los_queries) := load_or_run(con,query,los_queries)
+colnames(dinero_mun_validos) <- c("cve_muni","cuenta", "num_beneficiarios")
+
+dinero_mun_validos <- dinero_mun_validos %>%
+  left_join(coneval) %>%
+  mutate(ben_pobla=cuenta/pob_tot,
+         ben_pobr=cuenta/pobreza_num,
+         prom_monto = cuenta/num_beneficiarios,
+         ben_entre_pob_total = num_beneficiarios/pob_tot,
+         ben_entre_pobreza = num_beneficiarios/pobreza_num) %>%
+  arrange(cve_muni)
+
+geom_nal <- load_geom(con1,raw,geom_municipios,geom_col=geom,col_shape=cve_muni)
+
+municipios_nal <- geom_nal %>%
+  left_join(dinero_mun_validos)
+
+
+dinero_mun_validos %>% select(ent,cve_muni, municipio, prom_monto, ben_pobla, ben_pobr, ben_entre_pob_total, ben_entre_pobreza)
+
+```
+
+
+## Análisis de cobertura - (número de beneficiarios)
+
+```{r,echo=FALSE,message=FALSE, warning=FALSE}
+### Número de beneficiarios por municipio.
+municipios_nal$num_beneficiarios_q <- quant_labels(municipios_nal$num_beneficiarios)
+ggplot() +
+  geom_polygon(data = municipios_nal, aes(long, lat, group=group, fill=num_beneficiarios_q))+
+  labs(title="Número de beneficiarios con newid válido por municipio", fill="Número de Beneficiarios")+
+  scale_fill_brewer(na.value="grey") +
+  coord_fixed()
+```
+
+
+
+```{r,echo=FALSE,message=FALSE, warning=FALSE}
+### Número de beneficiarios entre la población total del municipio
+municipios_nal$ben_entre_pob_total_q <- quant_labels(municipios_nal$ben_entre_pob_total,8)
+ggplot() +
+  geom_polygon(data = municipios_nal, aes(long, lat, group=group, fill=ben_entre_pob_total_q)) +
+  labs(title="Tasa de Beneficiarios con newid válido por población total en el municipio", fill="Tasa de Cobertura") +
+  scale_fill_brewer(na.value="grey") +
+  coord_fixed()
+```
+
+
+```{r,echo=FALSE,message=FALSE, warning=FALSE}
+### Número de beneficiarios entre población en situación de pobreza en el municipio
+municipios_nal$ben_entre_pobreza_q <- quant_labels(municipios_nal$ben_entre_pobreza)
+ggplot() +
+  geom_polygon(data = municipios_nal, aes(long, lat, group=group, fill=ben_entre_pobreza_q)) +
+  labs(title="Tasa de beneficiarios con newid válido por población en situación de pobreza en el municipio", fill="Tasa de Cobertura") +
+  scale_fill_brewer(na.value="grey") +
+  coord_fixed()
+```
+
+
+## Número total de beneficiarios y monto total de beneficios monetarios durante el 2017.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+query <- "SELECT count(distinct newid), sum(nuimpmonetario) as monto
+              FROM athena_pub.pub_nominal
+              WHERE anio=2017 AND cast(newid as integer) > 500000000 AND cdprograma='S072'"
+
+c(monto_anual_invalidos,los_queries) := load_or_run(con,query,los_queries)
+colnames(monto_anual_invalidos) <- c("Número de Beneficiarios Únicos con newid inválido","Suma de Importes monetarios")
+monto_anual_invalidos
+```
+
+
+## Análisis de Progresividad de la política pública por municipio - Beneficios otorgados durante el 2017
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+
+# Para los beneficiarios con newid arriba de 500 millones
+query <- "SELECT cvemuni, sum(nuimpmonetario) as monto, count(distinct newid) as beneficiarios
+              FROM athena_pub.pub_nominal
+              WHERE anio=2017 AND cast(newid as integer) > 500000000 AND cdprograma = 'S072'
+              GROUP BY cvemuni"
+
+c(dinero_mun_invalidos,los_queries) := load_or_run(con,query,los_queries)
+colnames(dinero_mun_invalidos) <- c("cve_muni","cuenta", "num_beneficiarios")
+
+dinero_mun_invalidos <- dinero_mun_invalidos %>%
+  left_join(coneval) %>%
+  mutate(ben_pobla=cuenta/pob_tot,
+         ben_pobr=cuenta/pobreza_num,
+         prom_monto = cuenta/num_beneficiarios,
+         ben_entre_pob_total = num_beneficiarios/pob_tot,
+         ben_entre_pobreza = num_beneficiarios/pobreza_num) %>%
+  arrange(cve_muni)
+
+municipios_nal <- geom_nal %>%
+  left_join(dinero_mun_invalidos)
+
+
+```
+
+
+## Análisis de cobertura - (número de beneficiarios)
+
+```{r,echo=FALSE,message=FALSE, warning=FALSE}
+### Número de beneficiarios por municipio.
+municipios_nal$num_beneficiarios_q <- quant_labels(municipios_nal$num_beneficiarios)
+ggplot() +
+  geom_polygon(data = municipios_nal, aes(long, lat, group=group, fill=num_beneficiarios_q))+
+  labs(title="Número de beneficiarios con newid inválido por municipio", fill="Número de Beneficiarios")+
+  scale_fill_brewer(na.value="grey") +
+  coord_fixed()
+```
+
+
+
+```{r,echo=FALSE,message=FALSE, warning=FALSE}
+### Número de beneficiarios entre la población total del municipio
+municipios_nal$ben_entre_pob_total_q <- quant_labels(municipios_nal$ben_entre_pob_total)
+
+ggplot() +
+  geom_polygon(data = municipios_nal, aes(long, lat, group=group, fill=ben_entre_pob_total_q)) +
+  labs(title="Tasa de Beneficiarios con newid inválido por población total en el municipio", fill="Tasa de Cobertura") +
+  scale_fill_brewer(na.value="grey") +
+  coord_fixed()
+```
+
+
+```{r,echo=FALSE,message=FALSE, warning=FALSE}
+### Número de beneficiarios entre población en situación de pobreza en el municipio
+municipios_nal$ben_entre_pobreza_q <- quant_labels(municipios_nal$ben_entre_pobreza)
+ggplot() +
+  geom_polygon(data = municipios_nal, aes(long, lat, group=group, fill=ben_entre_pobreza_q)) +
+  labs(title="Tasa de beneficiarios con newid inválido por población en situación de pobreza en el municipio", fill="Tasa de Cobertura") +
+  scale_fill_brewer(na.value="grey") +
+  coord_fixed()
+
+```
+
+
+
+# Análisis nacional por estados
+
+```{r}
+coneval_estados <- coneval %>% dplyr::select(-municipio,-cve_muni,-actualizacion_sedesol,-data_date,-entidad)
+colnames(coneval_estados)[1] <- c("cve_ent")
+coneval_estados[is.na(coneval_estados)] <- 0
+coneval_estados <- coneval_estados %>% 
+    tidyr::replace_na(list(rep(0,48))) %>%
+    dplyr::group_by(cve_ent) %>% 
+    dplyr::summarise_all(dplyr::funs(sum))
+```
+
+## Análisis de Progresividad de la política pública por Estado - Beneficios otorgados durante el 2017
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+
+# Para los beneficiarios con newid abajo de 500 millones
+query <- "SELECT cveent, sum(nuimpmonetario) as monto, count(distinct newid) as beneficiarios
+              FROM athena_pub.pub_nominal
+              WHERE anio=2017 AND cast(newid as integer) < 500000000 AND cdprograma='S072'
+              GROUP BY cveent"
+
+c(dinero_edo_validos,los_queries) := load_or_run(con,query,los_queries)
+colnames(dinero_edo_validos) <- c("cve_ent","cuenta", "num_beneficiarios")
+
+dinero_edo_validos <- dinero_edo_validos %>%
+  left_join(coneval_estados) %>%
+  mutate(ben_pobla=cuenta/pob_tot,
+         ben_pobr=cuenta/pobreza_num,
+         prom_monto = cuenta/num_beneficiarios,
+         ben_entre_pob_total = num_beneficiarios/pob_tot,
+         ben_entre_pobreza = num_beneficiarios/pobreza_num) %>%
+  arrange(cve_ent)
+
+columns <- "cve_ent, "
+geom_edo <- load_geom(con1,geoms,estados,columns,geom_col=geom,col_shape=cve_ent)
+
+estados_nal <- geom_edo %>%
+  left_join(dinero_edo_validos)
+
+
+dinero_edo_validos %>% select(cve_ent, prom_monto, ben_pobla, ben_pobr, ben_entre_pob_total, ben_entre_pobreza)
+
+```
+
+
+## Análisis de cobertura - (número de beneficiarios)
+
+```{r,echo=FALSE,message=FALSE, warning=FALSE}
+### Número de beneficiarios por municipio.
+estados_nal$num_beneficiarios_q <- quant_labels(estados_nal$num_beneficiarios)
+ggplot() +
+  geom_polygon(data = estados_nal, aes(long, lat, group=group, fill=num_beneficiarios_q))+
+  labs(title="Número de beneficiarios con newid válido por estado", fill="Número de Beneficiarios")+
+  scale_fill_brewer(na.value="grey") +
+  coord_fixed()
+```
+
+
+
+```{r,echo=FALSE,message=FALSE, warning=FALSE}
+### Número de beneficiarios entre la población total del municipio
+estados_nal$ben_entre_pob_total_q <- quant_labels(estados_nal$ben_entre_pob_total)
+ggplot() +
+  geom_polygon(data = estados_nal, aes(long, lat, group=group, fill=ben_entre_pob_total_q)) +
+  labs(title="Tasa de Beneficiarios con newid válido por población total en el Estado", fill="Tasa de Cobertura") +
+  scale_fill_brewer(na.value="grey") +
+  coord_fixed()
+```
+
+
+```{r,echo=FALSE,message=FALSE, warning=FALSE}
+### Número de beneficiarios entre población en situación de pobreza en el municipio
+estados_nal$ben_entre_pobreza_q <- quant_labels(estados_nal$ben_entre_pobreza)
+ggplot() +
+  geom_polygon(data = estados_nal, aes(long, lat, group=group, fill=ben_entre_pobreza_q)) +
+  labs(title="Tasa de beneficiarios con newid válido por población en situación de pobreza en el Estado", fill="Tasa de Cobertura") +
+  scale_fill_brewer(na.value="grey") +
+  coord_fixed()
+
+```
+
+
+
+## Newid inválidas por Estado - Beneficios otorgados durante el 2017
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+query <- "SELECT cveent, sum(nuimpmonetario) as monto, count(distinct newid) as beneficiarios
+              FROM athena_pub.pub_nominal
+              WHERE anio=2017 AND cast(newid as integer) > 500000000 AND cdprograma='S072'
+              GROUP BY cveent"
+
+c(dinero_edo_invalidos,los_queries) := load_or_run(con,query,los_queries)
+colnames(dinero_edo_invalidos) <- c("cve_ent","cuenta", "num_beneficiarios")
+
+dinero_edo_invalidos <- dinero_edo_invalidos %>%
+  left_join(coneval_estados) %>%
+  mutate(ben_pobla=cuenta/pob_tot,
+         ben_pobr=cuenta/pobreza_num,
+         prom_monto = cuenta/num_beneficiarios,
+         ben_entre_pob_total = num_beneficiarios/pob_tot,
+         ben_entre_pobreza = num_beneficiarios/pobreza_num) %>%
+  arrange(cve_ent)
+
+columns <- "cve_ent, "
+geom_edo <- load_geom(con1,geoms,estados,columns,geom_col=geom,col_shape=cve_ent)
+
+estados_nal <- geom_edo %>%
+  left_join(dinero_edo_invalidos)
+
+
+dinero_edo_invalidos %>% select(cve_ent, prom_monto, ben_pobla, ben_pobr, ben_entre_pob_total, ben_entre_pobreza)
+```
+
+
+## Análisis de cobertura - (número de beneficiarios)
+
+```{r,echo=FALSE,message=FALSE, warning=FALSE}
+### Número de beneficiarios por municipio.
+estados_nal$num_beneficiarios_q <- quant_labels(estados_nal$num_beneficiarios)
+ggplot() +
+  geom_polygon(data = estados_nal, aes(long, lat, group=group, fill=num_beneficiarios_q))+
+  labs(title="Número de beneficiarios con newid inválido por estado", fill="Número de Beneficiarios")+
+  scale_fill_brewer(na.value="grey") +
+  coord_fixed()
+```
+
+
+
+```{r,echo=FALSE,message=FALSE, warning=FALSE}
+### Número de beneficiarios entre la población total del municipio
+estados_nal$ben_entre_pob_total_q <- quant_labels(estados_nal$ben_entre_pob_total)
+
+ggplot() +
+  geom_polygon(data = estados_nal, aes(long, lat, group=group, fill=ben_entre_pob_total_q)) +
+  labs(title="Tasa de Beneficiarios con newid inválido por población total en el estados", fill="Tasa de Cobertura") +
+  scale_fill_brewer(na.value="grey") +
+  coord_fixed()
+```
+
+
+```{r,echo=FALSE,message=FALSE, warning=FALSE}
+### Número de beneficiarios entre población en situación de pobreza en el municipio
+estados_nal$ben_entre_pobreza_q <- quant_labels(estados_nal$ben_entre_pobreza)
+ggplot() +
+  geom_polygon(data = estados_nal, aes(long, lat, group=group, fill=ben_entre_pobreza_q)) +
+  labs(title="Tasa de beneficiarios con newid inválido por población en situación de pobreza en el municipio", fill="Tasa de Cobertura") +
+  scale_fill_brewer(na.value="grey") +
+  coord_fixed()
+```
+
+# Distribución de Pagos
+
+# Por Estado
+## newid válidos
+```{r,echo=FALSE,results='hide'}
+query <- "WITH los_montos AS (SELECT cveent, newid, sum(nuimpmonetario) as monto
+          FROM athena_pub.pub_nominal
+          WHERE anio=2017 AND cast(newid as integer) < 500000000 AND cdprograma='S072'
+          GROUP BY cveent, newid),
+          
+          los_valores AS (SELECT cveent, avg(monto) as media, approx_percentile(monto,0.25) as q1,
+                  approx_percentile(monto,0.5) as q2, approx_percentile(monto,0.75) as q3,
+                  stddev(monto) as std, array_agg(monto) as valores
+          FROM los_montos
+          GROUP BY cveent),
+
+          los_rangos AS (SELECT cveent, media, q1, q2, q3,  std, abs(q3)-abs(q1) as IQR, filter(valores, x -> x IS NOT NULL) as nonull
+          FROM los_valores)
+
+          SELECT cveent, media, q1, q2, q3, std,
+          array_union(filter(nonull, x -> x > q3+1.5*IQR),filter(nonull, x -> x < q1-1.5*IQR)) as outliers,
+          array_min(array_intersect(filter(nonull,x -> x > q3),filter(nonull,x -> x < q3+1.5*IQR))) as max,
+          array_max(array_intersect(filter(nonull,x -> x < q1),filter(nonull,x -> x > q1-1.5*IQR))) as min
+          FROM los_rangos"
+
+c(estadisticos_prospera_validos,los_queries) := load_or_run(con,query,los_queries)
+estadisticos_prospera_validos
+
+estadisticos_prospera_validos$cveent <- as.integer(estadisticos_prospera_validos$cveent)
+estadisticos_prospera_validos <- estadisticos_prospera_validos %>%
+  left_join(los_estados)
+estadisticos_prospera_validos$outliers <- gsub('\\[|\\]','',estadisticos_prospera_validos$outliers) %>%
+  strsplit(., split=", ")
+estadisticos_prospera_validos$outliers <- lapply(estadisticos_prospera_validos$outliers,as.integer)
+
+all_values <-unnest(estadisticos_prospera_validos,outliers)
+```
+
+
+```{r,echo=FALSE,fig.width=25,fig.height=7}
+ggplot(estadisticos_prospera_validos, aes(x = reorder(as.factor(name),q2))) +
+  geom_boxplot(aes(
+      lower = q1, 
+      upper = q3, 
+      middle = q2, 
+      ymin = min, 
+      ymax = max),
+    stat = "identity") +
+  geom_point(data=all_values, aes(x=reorder(as.factor(name),q2),y=outliers))+
+  theme(axis.text.x = element_text(angle = 45,size=15, hjust = 1),plot.title = element_text(size = 30, face = "bold"))+
+  scale_y_log10()
+```
+
+
+## newid inválidos
+
+## Agregación por mes
+```{r,echo=FALSE,results='hide'}
+query <- "WITH los_montos AS (SELECT cveent, newid, sum(nuimpmonetario) as monto
+          FROM athena_pub.pub_nominal
+          WHERE anio=2017 AND cast(newid as integer) > 500000000 AND cdprograma='S072'
+          GROUP BY cveent, newid),
+          
+          los_valores AS (SELECT cveent, avg(monto) as media, approx_percentile(monto,0.25) as q1,
+                  approx_percentile(monto,0.5) as q2, approx_percentile(monto,0.75) as q3,
+                  stddev(monto) as std, array_agg(monto) as valores
+          FROM los_montos
+          GROUP BY cveent),
+
+          los_rangos AS (SELECT cveent, media, q1, q2, q3,  std, abs(q3)-abs(q1) as IQR, filter(valores, x -> x IS NOT NULL) as nonull
+          FROM los_valores)
+
+          SELECT cveent, media, q1, q2, q3, std,
+          array_union(filter(nonull, x -> x > q3+1.5*IQR),filter(nonull, x -> x < q1-1.5*IQR)) as outliers,
+          array_min(array_intersect(filter(nonull,x -> x > q3),filter(nonull,x -> x < q3+1.5*IQR))) as max,
+          array_max(array_intersect(filter(nonull,x -> x < q1),filter(nonull,x -> x > q1-1.5*IQR))) as min
+          FROM los_rangos"
+
+              
+c(estadisticos_prospera_inval,los_queries) := load_or_run(con,query,los_queries)
+
+estadisticos_prospera_inval$cveent <- as.integer(estadisticos_prospera_inval$cveent)
+estadisticos_prospera_inval <- estadisticos_prospera_inval %>%
+  left_join(los_estados)
+estadisticos_prospera_inval$outliers <- gsub('\\[|\\]','',estadisticos_prospera_inval$outliers) %>%
+  strsplit(., split=", ")
+estadisticos_prospera_inval$outliers <- lapply(estadisticos_prospera_inval$outliers,as.integer)
+
+all_values <-unnest(estadisticos_prospera_inval,outliers)
+```
+
+
+```{r,echo=FALSE,fig.width=25,fig.height=7}
+ggplot(estadisticos_prospera_inval, aes(x = reorder(as.factor(name),q2))) +
+  geom_boxplot(aes(
+      lower = q1, 
+      upper = q3, 
+      middle = q2, 
+      ymin = min, 
+      ymax = max),
+    stat = "identity") +
+  geom_point(data=all_values, aes(x=reorder(as.factor(name),q2),y=outliers))+
+  theme(axis.text.x = element_text(angle = 45,size=15, hjust = 1),plot.title = element_text(size = 30, face = "bold"))+
+  scale_y_log10()
+```
+
+
+## Por beneficios
+### Para newid válidos
+```{r,echo=FALSE,results='hide'}
+query <- "WITH los_montos AS (SELECT cdbeneficio, newid, sum(nuimpmonetario) as monto
+          FROM athena_pub.pub_nominal
+          WHERE anio=2017 AND cast(newid as integer) > 500000000 AND cdprograma='S072'
+          GROUP BY cdbeneficio, newid),
+          
+          los_valores AS (SELECT cdbeneficio, avg(monto) as media, approx_percentile(monto,0.25) as q1,
+                  approx_percentile(monto,0.5) as q2, approx_percentile(monto,0.75) as q3,
+                  stddev(monto) as std, array_agg(monto) as valores
+          FROM los_montos
+          GROUP BY cdbeneficio),
+
+          los_rangos AS (SELECT cdbeneficio, media, q1, q2, q3,  std, abs(q3)-abs(q1) as IQR, filter(valores, x -> x IS NOT NULL) as nonull
+          FROM los_valores)
+
+          SELECT cdbeneficio, media, q1, q2, q3, std,
+          array_union(filter(nonull, x -> x > q3+1.5*IQR),filter(nonull, x -> x < q1-1.5*IQR)) as outliers,
+          array_min(array_intersect(filter(nonull,x -> x > q3),filter(nonull,x -> x < q3+1.5*IQR))) as max,
+          array_max(array_intersect(filter(nonull,x -> x < q1),filter(nonull,x -> x > q1-1.5*IQR))) as min
+          FROM los_rangos"
+
+              
+c(estadisticos_prospera_ben_val,los_queries) := load_or_run(con,query,los_queries)
+
+estadisticos_prospera_ben_val <- estadisticos_prospera_ben_val %>%
+  left_join(catalogo_beneficios)
+estadisticos_prospera_ben_val$outliers <- gsub('\\[|\\]','',estadisticos_prospera_ben_val$outliers) %>%
+  strsplit(., split=", ")
+estadisticos_prospera_ben_val$outliers <- lapply(estadisticos_prospera_ben_val$outliers,as.integer)
+estadisticos_prospera_ben_val$max[is.na(estadisticos_prospera_ben_val$max)] <- estadisticos_prospera_ben_val$q3[is.na(estadisticos_prospera_ben_val$max)]
+estadisticos_prospera_ben_val$min[is.na(estadisticos_prospera_ben_val$min)] <- estadisticos_prospera_ben_val$q1[is.na(estadisticos_prospera_ben_val$min)]
+estadisticos_prospera_ben_val$nbbeneficio[is.na(estadisticos_prospera_ben_val$nbbeneficio)] <- as.character(estadisticos_prospera_ben_val$cdbeneficio[is.na(estadisticos_prospera_ben_val$nbbeneficio)])
+
+all_values <-unnest(estadisticos_prospera_ben_val,outliers)
+all_values$max[is.na(all_values$max)] <- all_values$q3[is.na(all_values$max)]
+all_values$min[is.na(all_values$min)] <- all_values$q3[is.na(all_values$min)]
+```
+
+
+```{r,echo=FALSE,fig.width=25,fig.height=7}
+ggplot(estadisticos_prospera_ben_val, aes(x = reorder(as.factor(nbbeneficio),q2))) +
+  geom_boxplot(aes(
+      lower = q1, 
+      upper = q3, 
+      middle = q2, 
+      ymin = min, 
+      ymax = max),
+    stat = "identity") +
+  geom_point(data=all_values, aes(x=reorder(as.factor(nbbeneficio),q2),y=outliers))+
+  theme(axis.text.x = element_text(angle = 45,size=15, hjust = 1),plot.title = element_text(size = 30, face = "bold"))+
+  scale_y_log10()
+```
+
+
+### newid válidos
+```{r,echo=FALSE,results='hide'}
+query <- "WITH los_montos AS (SELECT cdbeneficio, newid, sum(nuimpmonetario) as monto
+          FROM athena_pub.pub_nominal
+          WHERE anio=2017 AND cast(newid as integer) < 500000000 AND cdprograma='S072'
+          GROUP BY cdbeneficio, newid),
+          
+          los_valores AS (SELECT cdbeneficio, avg(monto) as media, approx_percentile(monto,0.25) as q1,
+                  approx_percentile(monto,0.5) as q2, approx_percentile(monto,0.75) as q3,
+                  stddev(monto) as std, array_agg(monto) as valores
+          FROM los_montos
+          GROUP BY cdbeneficio),
+
+          los_rangos AS (SELECT cdbeneficio, media, q1, q2, q3,  std, abs(q3)-abs(q1) as IQR, filter(valores, x -> x IS NOT NULL) as nonull
+          FROM los_valores)
+
+          SELECT cdbeneficio, media, q1, q2, q3, std,
+          array_union(filter(nonull, x -> x > q3+1.5*IQR),filter(nonull, x -> x < q1-1.5*IQR)) as outliers,
+          array_min(array_intersect(filter(nonull,x -> x > q3),filter(nonull,x -> x < q3+1.5*IQR))) as max,
+          array_max(array_intersect(filter(nonull,x -> x < q1),filter(nonull,x -> x > q1-1.5*IQR))) as min
+          FROM los_rangos"
+
+              
+c(estadisticos_prospera_ben_inval,los_queries) := load_or_run(con,query,los_queries)
+
+estadisticos_prospera_ben_inval <- estadisticos_prospera_ben_inval %>%
+  left_join(catalogo_beneficios)
+estadisticos_prospera_ben_inval$outliers <- gsub('\\[|\\]','',estadisticos_prospera_ben_inval$outliers) %>%
+  strsplit(., split=", ")
+estadisticos_prospera_ben_inval$outliers <- lapply(estadisticos_prospera_ben_inval$outliers,as.integer)
+estadisticos_prospera_ben_inval$max[is.na(estadisticos_prospera_ben_inval$max)] <- estadisticos_prospera_ben_inval$q3[is.na(estadisticos_prospera_ben_inval$max)]
+estadisticos_prospera_ben_inval$min[is.na(estadisticos_prospera_ben_inval$min)] <- estadisticos_prospera_ben_inval$q1[is.na(estadisticos_prospera_ben_inval$min)]
+estadisticos_prospera_ben_inval$nbbeneficio[is.na(estadisticos_prospera_ben_inval$nbbeneficio)] <- as.character(estadisticos_prospera_ben_inval$cdbeneficio[is.na(estadisticos_prospera_ben_inval$nbbeneficio)])
+
+all_values <-unnest(estadisticos_prospera_ben_val,outliers)
+all_values$max[is.na(all_values$max)] <- all_values$q3[is.na(all_values$max)]
+all_values$min[is.na(all_values$min)] <- all_values$q3[is.na(all_values$min)]
+```
+
+
+```{r,echo=FALSE,fig.width=25,fig.height=7}
+ggplot(estadisticos_prospera_ben_inval, aes(x = reorder(as.factor(nbbeneficio),q2))) +
+  geom_boxplot(aes(
+      lower = q1, 
+      upper = q3, 
+      middle = q2, 
+      ymin = min, 
+      ymax = max),
+    stat = "identity") +
+  geom_point(data=all_values, aes(x=reorder(as.factor(nbbeneficio),q2),y=outliers))+
+  theme(axis.text.x = element_text(angle = 45,size=15, hjust = 1),plot.title = element_text(size = 30, face = "bold"))+
+  scale_y_log10()
+```
