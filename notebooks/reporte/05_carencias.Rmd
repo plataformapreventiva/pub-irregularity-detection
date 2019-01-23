@@ -1,0 +1,184 @@
+---
+title: "carencias"
+output: html_document
+---
+#TODO
+
+-cambiar colores
+-quitar ejes
+-reducir nombres
+-ver si quitar color gris
+
+```{r, echo=FALSE, results='hide', include=FALSE, message=FALSE, warning=FALSE}
+source("../../utils.R")
+### DB conections
+con <- pub_connect(s3dir = Sys.getenv("S3_DIR"), schema = Sys.getenv("SCHEMA"))
+con1 <- prev_connect()
+los_queries <- query_dic()
+```
+
+```{r}
+crimenes_tasas_municipios <- load_table(con1, features, crimenes_tasas_municipios) %>%
+  retrieve_result()
+
+data_raw <- tbl(con1, dbplyr::in_schema('features','inform_variables_municipios')) %>%
+  select(cve_muni, homicidio_culposo_tasa, 
+                  homicidio_dolos_tasao, 
+                  feminicidio_tasa,
+                  secuestro_tasa,
+                  robo_vehiculos_tasa,
+                  violencia_familiar_tasa) %>%
+retrieve_result() 
+
+inform_index <- load_table(con1, models, inform_index_municipios) %>%
+  retrieve_result() %>%
+  select(cve_muni, violencia_y_delincuencia) 
+
+munis <- load_table(con1, raw, geoms_municipios) %>%
+  retrieve_result() %>% 
+  filter(data_date=='2018-a') %>%
+  select(cve_muni, nom_muni, wkt)
+
+
+data <-  left_join(munis, inform_index, by="cve_muni") %>%
+  left_join(data_raw, by='cve_muni')
+
+data %>% 
+  write_csv("inform_index_data.csv")
+
+```
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# Geometría
+geom_nal <- load_geom(con1,raw,geom_municipios_old,geom_col=geom,col_shape=cve_muni)
+
+
+
+
+geom_nal <- load_geom(con1,raw,geom_municipios_old,geom_col=geom,col_shape=cve_muni)
+
+  
+### Población y Pobreza
+## CONEVAL 2015
+coneval <- load_table(con1,clean,coneval_municipios) %>% retrieve_result() %>% 
+  filter(data_date == "2015-a")
+## Intercensal 2015
+intercensal <- load_table(con1,public,poblacion_intercensal_mun_2015) %>% retrieve_result() %>%
+  rename(poblacion_intercensal = poblacion)
+## Conapo
+conapo <- load_table(con1,raw,conapo_proyecciones_poblacion) %>% retrieve_result() 
+
+poblacion <- left_join(coneval, intercensal)
+
+# Cuestionario Único para el Análisis de Programas Sociales (CUAPS)
+## Programas
+
+cuaps_programas <- load_table(con1,raw,cuaps_programas) %>% 
+  retrieve_result() %>% filter(chr_cve_dependencia == "20") %>% 
+  select(cuaps_folio, chr_nombre_programa_cuaps, 
+         chr_clave_prespupuestal_pro, obj_gral_prog, 
+         obj_esp_prog_1, pob_obj_prog, der_social_edu, 
+         der_social_sal, der_social_alim, der_social_viv, 
+         der_social_mam, der_social_tra, der_social_segsoc, 
+         der_social_nodis, der_social_beco, der_social_ning)
+
+## Componentes
+cuaps_componentes <- load_table(con1,raw,cuaps_apoyos) %>% retrieve_result() %>% 
+  select(cuaps_folio, id_componente, nombre_componente, id_apoyo, 
+         nombre_apoyo, descr_apoyo,
+         indic_a, indic_b, indic_c, indic_d, indic_e, indic_f, 
+         indic_g, indic_h, indic_i, indic_j, indic_k, indic_l, 
+         indic_m, indic_n, indic_o, indic_p, indic_q, indic_r, 
+         indic_s, indic_t, tem_apoyo)
+## Componentes Agregado
+cuaps_componentes_g <- cuaps_componentes %>% 
+  select(cuaps_folio, indic_a, indic_b, indic_c, indic_d, indic_e, indic_f, 
+         indic_g, indic_h, indic_i, indic_j, indic_k, indic_l, 
+         indic_m, indic_n, indic_o, indic_p, indic_q, indic_r, 
+         indic_s, indic_t) %>% group_by(cuaps_folio) %>%
+  summarise_all(sum)
+
+cuaps <- left_join(cuaps_programas, cuaps_componentes_g, by="cuaps_folio") %>%
+  mutate(c_indic_alimentaria = (indic_a + indic_b) ,
+         c_indic_vivienda = (indic_c + indic_d + indic_e + indic_f) ,
+         c_indic_servicios = (indic_g + indic_h + indic_i + indic_j) ,
+         c_indic_salud = (indic_k) ,
+         c_indic_educacion = (indic_l + indic_m + indic_n) ,
+         c_indic_segsocial = (indic_o + indic_p + indic_q) ,
+         c_indic_ingreso_lb = (indic_r) ,
+         c_indic_ingreso_lbm = (indic_s) ) 
+
+## Beneficios
+catalogo_beneficios <- csv_s3()
+colnames(catalogo_beneficios) <- c("cdbeneficio","nbbeneficio")
+
+los_estados <- read_csv("../../estados.csv")
+colnames(los_estados) <- c("cveent","name","pagos","distintos")
+
+
+coneval <- load_table(con1,clean,coneval_municipios) %>% retrieve_result() %>% 
+  filter(data_date == "2015-a")
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+plot_cobertura_carencia <- function(variable,personas_carencia){
+  carencias <- c("ic_ali_num" = "Carencia Alimentaria",
+            "ic_cv_num" = "Carencia por Espacios de Vivienda",
+            "ic_sbv_num" = "Carencia por Servicios Básicos en la Vivienda",
+            "ic_asalud_num" = "Carencia por Acceso a los Servicios de Salud",
+            "ic_rezedu_num" = "Carencia por Rezago Educativo",
+            "ic_segsoc_num" = "Carencia por Acceso a la Seguridad Social",
+            "plb_num" = "Ingreso Menor a la Linea de Bienestar",
+            "plb_m_num" = "Ingreso Menor a la Linea de Bienestar Mínimo")
+
+  cves <- cuaps %>% dplyr::rename(temp =!!variable) %>%
+    filter(temp>0) %>% select(chr_clave_prespupuestal_pro) %>%
+    filter(chr_clave_prespupuestal_pro!="S070",chr_clave_prespupuestal_pro!= "S053") %>%  pull() %>%
+    paste(collapse="', '" )
+  print(cves)
+  query <- glue::glue("SELECT cvemuni, sum(nuimpmonetario) as monto, count(distinct newid) as beneficiarios 
+                 FROM athena_pub.pub_public 
+                 WHERE cdprograma IN ('{cves}') AND anio='2017' AND cast(newid as integer) < 500000000 AND 
+                 cddependencia='20' 
+                 GROUP BY cvemuni")
+  
+  c(monto_20_mun_validos,los_queries) := load_or_run(con,query,los_queries)
+  colnames(monto_20_mun_validos) <- c("cve_muni", "cuenta", "num_beneficiarios")
+  
+  monto_20_mun_validos_ <- monto_20_mun_validos %>%
+    left_join(poblacion, by = "cve_muni") %>%
+    rename(prueba = !! personas_carencia) %>%
+    mutate(ben_pobla=cuenta/poblacion_intercensal,
+           ben_entre_pob_total = num_beneficiarios/poblacion_intercensal,
+           ben_ic = num_beneficiarios/ prueba) %>%
+    arrange(cve_muni)
+  
+  municipios_nal <- geom_nal %>%
+    left_join(monto_20_mun_validos_)
+  
+  ### Número de beneficiarios por municipio.
+  municipios_nal$num_beneficiarios_q <- quant_labels(municipios_nal$ben_ic)
+  carencia_name <- carencias[eval(personas_carencia)] %>% unname()
+  ggplot() +
+    geom_polygon(data = municipios_nal, aes(long, lat, group=group, fill=num_beneficiarios_q))+ 
+    labs(title=glue::glue("Tasa de cobertura de programas relacionados a {carencia_name}"), 
+         fill=glue::glue("{carencia_name} ")) + 
+    scale_fill_brewer(na.value="grey") + 
+    coord_fixed() 
+  ggsave(glue::glue("../../outputs/{carencia_name}.png"))
+}
+```
+
+```{r}
+plot_cobertura_carencia("c_indic_alimentaria","ic_ali_num")
+#plot_cobertura_carencia("c_indic_vivienda","ic_cv_num")
+##plot_cobertura_carencia("c_indic_servicios","ic_sbv_num")
+plot_cobertura_carencia("c_indic_salud","ic_asalud_num")
+plot_cobertura_carencia("c_indic_educacion","ic_rezedu_num")
+plot_cobertura_carencia("c_indic_segsocial","ic_segsoc_num")
+plot_cobertura_carencia("c_indic_ingreso_lb","plb_num")
+plot_cobertura_carencia("c_indic_ingreso_lbm","plb_m_num")
+
+```
+

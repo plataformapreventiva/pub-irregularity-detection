@@ -1,0 +1,81 @@
+---
+title: "pub_agg"
+output: html_document
+---
+
+```{r, include=FALSE}
+source("../utils.R")
+con <- pub_connect(s3dir = Sys.getenv("S3_DIR"), schema = Sys.getenv("SCHEMA"))
+query <- glue::glue("SELECT 'n' nivel, 'nacional' cvenivel, anio as nomperiodo, 
+                          'origen-cddependencia-cdpadron' cveagregado, 
+                          origen || '-' || cddependencia || '-' || cdprograma as nomagregado, 
+                          count(distinct newid) as beneficiarios, 
+                          sum(nuimpmonetario) as monto 
+                        FROM athena_pub.pub_cleaned_test 
+                          GROUP BY anio, origen, cddependencia, cdprograma, cdpadron 
+                      UNION 
+                        SELECT 'e' nivel, cveent as cvenivel, anio as nomperiodo, 
+                          'origen-cddependencia-cdprograma' cveagregado, 
+                          origen || '-' || cddependencia || '-' || cdprograma as nomagregado, 
+                          count(distinct newid) as beneficiarios, 
+                          sum(nuimpmonetario) as monto 
+                        FROM athena_pub.pub_cleaned_test 
+                          GROUP BY cveent, anio, origen, cddependencia, cdprograma 
+                      UNION 
+                        SELECT 'm' nivel, cvemuni as cvenivel, anio as nomperiodo, 
+                          'origen-cddependencia-cdprograma' cveagregado, 
+                          origen || '-' || cddependencia || '-' || cdprograma as nomagregado, 
+                          count(distinct newid) as beneficiarios, 
+                          sum(nuimpmonetario) as monto 
+                        FROM athena_pub.pub_cleaned_test 
+                          GROUP BY cvemuni, anio, origen, cddependencia, cdprograma")
+
+c(beneficiarios_sedesol_ALL,los_queries) := load_or_run(con,query,los_queries)
+
+library(jsonlite)
+temp <- beneficiarios_sedesol_ALL %>% head(1000)
+beneficiarios_sedesol_ALL[is.na(beneficiarios_sedesol_ALL)] <- 0
+
+json_ <- beneficiarios_sedesol_ALL %>% 
+  rowwise() %>%
+  mutate(values=toJSON(list(beneficiarios=beneficiarios,
+                            monto=monto), auto_unbox=T)) %>%
+  drop_na(values) %>%
+  mutate(values = str_c('"',nomperiodo,'":',values)) %>% 
+  group_by(nivel, cvenivel, nomagregado) %>%
+  summarise(values=paste(values, collapse=', ')) %>%
+  mutate(values = str_c('"',nomagregado,'":{',values,'}')) %>%
+  group_by(nivel,cvenivel) %>%
+  summarise(values=paste(values, collapse=', ')) %>%
+  mutate(values = str_c('{',values, '}')) %>%
+    select(nivel, cvenivel, values)
+  
+colnames(json_) <- c("nivel", "nivel_clave",
+                                         "values")
+con1 <- prev_connect()
+
+db_schema <- c('TEXT', 'TEXT', 'JSONB') %>%
+  setNames(names(json_))
+ 
+tbl <- Id(schema = "tidy", table = "pub_agregados")
+
+RPostgres::dbWriteTable(conn=con1,
+						name=  c("tidy","pub_agregados"),
+						value=json_,
+						temporary=FALSE,
+						overwrite=TRUE,
+						field.types=db_schema,
+						row.names=FALSE)
+
+```
+
+
+```{r}
+source("../utils.R")
+con <- pub_connect(s3dir = Sys.getenv("S3_DIR"), schema = Sys.getenv("SCHEMA"))
+query <- glue::glue("") 
+
+c(prueba,los_queries) := load_or_run(con,query,los_queries)
+
+```
+

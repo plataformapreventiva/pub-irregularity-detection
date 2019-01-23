@@ -1,0 +1,561 @@
+---
+title: "reporte_plots"
+output: html_document
+---
+
+# Introducción
+Este reporte presenta avances al análisis de detección de irregularidades en el Padrón Único de beneficiarios. 
+
+
+```{r, echo=FALSE, results='hide', include=FALSE}
+options(scipen=10000)
+
+dotenv::load_dot_env("../.env")
+paquetines <- c("dbrsocial","ggplot2","tidyverse","plyr","scales",
+                "maptools","rgdal","ggmap","gridExtra","rgdal",
+                "Hmisc","rgeos","sp","sf","rgeos","broom","scales",
+                "rangeMapper","ggmap","plotly","viridis")
+no_instalados <- paquetines[!(paquetines %in% installed.packages()[,"Package"])]
+if(length(no_instalados)) install.packages(no_instalados)
+lapply(paquetines, library, character.only = TRUE)
+
+```
+
+```{r, echo=FALSE, results='hide', include=FALSE, message=FALSE, warning=FALSE}
+### DB conections
+con <- pub_connect(s3dir = Sys.getenv("S3_DIR"), schema = Sys.getenv("SCHEMA"))
+con1 <- prev_connect()
+los_queries <- query_dic()
+
+```
+
+```{r, echo=FALSE, results='hide', include=FALSE, message=FALSE, warning=FALSE}
+# Funciones
+load_query <- function(connection,schema,the_table,columns="*",options=""){
+    the_query <- "SELECT %s FROM %s.%s"
+    complete <- paste0(the_query," ",options)
+    schema    <- deparse(substitute(schema))
+    the_table <- deparse(substitute(the_table))
+    initial <- RPostgreSQL::dbSendQuery(connection,
+                             sprintf(complete,columns,schema,the_table))
+}
+
+load_geom <- function(connection,schema,the_table,columns="cve_mun, cve_ent, cve_muni, ", geom_col, col_shape, options=""){
+    geom_col <- deparse(substitute(geom_col))
+    schema    <- deparse(substitute(schema))
+    the_table <- deparse(substitute(the_table))
+    col_shape <- deparse(substitute(col_shape))
+
+    the_query <- "SELECT %s FROM %s.%s"
+    geom_col_as <- sprintf("ST_AsText(%s) as geom",geom_col)
+    columns <- paste0(columns,geom_col_as)
+    complete <- paste0(the_query," ",options)
+
+    initial <- RPostgreSQL::dbSendQuery(connection,
+                             sprintf(complete,columns,schema,the_table)) %>%
+    retrieve_result()
+
+    mun_shp = WKT2SpatialPolygonsDataFrame(initial, geom = geom_col, id = col_shape)
+    mun_df <- fortify(mun_shp, region = col_shape)
+    names(mun_df)[names(mun_df)=="id"] <- col_shape
+
+    return(mun_df)
+}
+
+theme_pub <- function(base_size=12, font=NA){
+  txt <- element_text(size = base_size+2, colour = "black", face = "plain")
+  bold_txt <- element_text(size = base_size+2, colour = "black", face = "bold")
+  
+  theme_classic(base_size = base_size, base_family = font) +
+    
+  theme(plot.title = element_text(size =20, face = "bold"),
+        axis.title.x = element_text(size=20),
+        axis.title.y = element_text(size=20),
+        axis.text.x = element_text(angle = 45, size=22, hjust = 1),
+        axis.text.y = element_text(size=22),
+        legend.text = element_text(size=10))
+}
+
+quant_labels <- function(variable, no_classes=6){
+  quantiles <- quantile(variable, 
+                        probs = seq(0, 1, length.out = no_classes + 1),na.rm = TRUE)
+  labels <- c()
+  for(idx in 1:length(quantiles)){labels <- c(labels, paste0(round(quantiles[idx], 2)," – ", round(quantiles[idx + 1], 2))) }
+  labels <- labels[1:length(labels)-1]
+  variable_q <- cut(variable, breaks = quantiles,labels = labels, include.lowest = T)
+  return(variable_q)
+}
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# Geometría
+geom_nal <- load_geom(con1,raw,geom_municipios_old,geom_col=geom,col_shape=cve_muni)
+### Población y Pobreza
+## CONEVAL 2015
+coneval <- load_table(con1,clean,coneval_municipios) %>% retrieve_result() %>% 
+  filter(data_date == "2015-a")
+## Intercensal 2015
+intercensal <- load_table(con1,public,poblacion_intercensal_mun_2015) %>% retrieve_result() %>%
+  rename(poblacion_intercensal = poblacion)
+## Conapo
+conapo <- load_table(con1,raw,conapo_proyecciones_poblacion) %>% retrieve_result() 
+
+poblacion <- left_join(coneval, intercensal)
+
+# Cuestionario Único para el Análisis de Programas Sociales (CUAPS)
+## Programas
+cuaps_programas <- load_table(con1,raw,cuaps_programas) %>% retrieve_result() %>% 
+  filter(chr_cve_dependencia == "20") %>% select(cuaps_folio, chr_nombre_programa_cuaps, chr_clave_prespupuestal_pro, 
+                                                 obj_gral_prog, obj_esp_prog_1, pob_obj_prog, der_social_edu, 
+                                                 der_social_sal, der_social_alim, der_social_viv, der_social_mam, 
+                                                 der_social_tra, der_social_segsoc, der_social_nodis, der_social_beco, 
+                                                 der_social_ning)
+## Componentes
+cuaps_componentes <- load_table(con1,raw,cuaps_componentes) %>% retrieve_result() %>% 
+  select(cuaps_folio, id_componente, nombre_componente, id_apoyo, 
+         nombre_apoyo, descr_apoyo,
+         indic_a, indic_b, indic_c, indic_d, indic_e, indic_f, 
+         indic_g, indic_h, indic_i, indic_j, indic_k, indic_l, 
+         indic_m, indic_n, indic_o, indic_p, indic_q, indic_r, 
+         indic_s, indic_t, tem_apoyo)
+## Componentes Agregado
+cuaps_componentes_g <- cuaps_componentes %>% 
+  select(cuaps_folio, indic_a, indic_b, indic_c, indic_d, indic_e, indic_f, 
+         indic_g, indic_h, indic_i, indic_j, indic_k, indic_l, 
+         indic_m, indic_n, indic_o, indic_p, indic_q, indic_r, 
+         indic_s, indic_t) %>% group_by(cuaps_folio) %>%
+  summarise_all(sum)
+
+cuaps <- left_join(cuaps_programas, cuaps_componentes_g, by="cuaps_folio")
+
+## Beneficios
+catalogo_beneficios <- csv_s3()
+colnames(catalogo_beneficios) <- c("cdbeneficio","nbbeneficio")
+
+los_estados <- read_csv("../estados.csv")
+colnames(los_estados) <- c("cveent","name","pagos","distintos")
+
+
+coneval <- load_table(con1,clean,coneval_municipios) %>% retrieve_result() %>% 
+  filter(data_date == "2015-a")
+
+```
+
+
+# Análisis de beneficiarios con new id inválido
+
+## Análisis A por municipio
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# Válidos
+query <- "SELECT cvemuni, sum(nuimpmonetario) as monto, count(distinct newid) as beneficiarios
+              FROM athena_pub.pub_public
+              WHERE anio=2017 AND cast(newid as integer) < 500000000 AND cddependencia = '20'
+              GROUP BY cvemuni"
+c(dinero_mun_validos,los_queries) := load_or_run(con,query,los_queries)
+colnames(dinero_mun_validos) <- c("cve_muni","monto_validos", "num_beneficiarios")
+
+# Inválidos
+query <- "SELECT cvemuni, sum(nuimpmonetario) as monto, count(distinct newid) as beneficiarios
+              FROM athena_pub.pub_public
+              WHERE anio=2017 AND cast(newid as integer) > 500000000 AND cddependencia = '20'
+              GROUP BY cvemuni"
+
+c(dinero_mun_invalidos,los_queries) := load_or_run(con,query,los_queries)
+colnames(dinero_mun_invalidos) <- c("cve_muni","monto_invalidos","num_beneficiarios_invalidos")
+
+# indicadores
+dinero_mun <- dinero_mun_validos %>% left_join(dinero_mun_invalidos) %>%
+  left_join(intercensal) %>%   left_join(coneval) %>% 
+  drop_na() %>%
+  dplyr::mutate(ben_pobla_validos = num_beneficiarios/poblacion_intercensal,
+         ben_pobla_invalidos = num_beneficiarios_invalidos/poblacion_intercensal,
+         prop_invalidos = num_beneficiarios_invalidos/(num_beneficiarios_invalidos + num_beneficiarios),
+         prop_monto_invalido= monto_invalidos/(monto_validos + monto_invalidos),
+         prom_monto = monto_validos/num_beneficiarios,
+         ben_entre_pob_total = num_beneficiarios/poblacion_intercensal,
+         pobreza_entre_pob_total = pobreza_num/poblacion_intercensal,
+         ben_entre_pobreza = num_beneficiarios/pobreza_num) %>%
+  arrange(cve_muni)
+
+municipios_nal <- geom_nal %>%
+  left_join(dinero_mun)
+
+```
+
+## Proporción de beneficiarios inválidos por municipio
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+
+municipios_nal$num_beneficiarios_q <- quant_labels(municipios_nal$prop_invalidos)
+
+map <- ggplot(municipios_nal, aes(label=num_beneficiarios_q)) +
+  geom_polygon(aes(long, lat, group=group, fill=num_beneficiarios_q, text = num_beneficiarios_q))+
+  labs(title="Proporción de beneficiarios con newid inválido por municipio", fill="Número de Beneficiarios")+
+  scale_fill_brewer(na.value="grey") +
+  coord_fixed() +
+  theme_pub() 
+map
+#ggp<-ggplotly(map, tooltip = c('text'))
+#htmlwidgets::saveWidget(ggp, "~/temp/proporcion_invalidos_muni.html")
+
+```
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+## número de de beneficiarios
+#qplot(municipios_nal$ben_pobla_invalidos, geom="histogram")  + 
+#  xlab("Número de Beneficiarios") + ggtitle('Histograma Beneficiarios con Id inválido') + 
+#  scale_x_continuous(breaks = round(seq(min(municipios_nal$ben_pobla_invalidos), 
+#                                        max(municipios_nal$ben_pobla_invalidos), by = 0.5),4))
+```
+
+## Montos por id inválido 
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+municipios_nal$num_beneficiarios_q <- quant_labels(municipios_nal$prop_monto_invalido)
+ggplot() +
+  geom_polygon(data = municipios_nal, aes(long, lat, group=group, fill=num_beneficiarios_q))+
+  labs(title="Proporción de montos otorgados a beneficiarios con newid inválido por municipio", fill="Número de Beneficiarios")+
+  scale_fill_brewer(na.value="grey") +
+  coord_fixed() +
+  theme_pub()
+```
+
+
+## Análisis por programa
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# Válidos
+query <- "SELECT cdprograma, nbprograma, sum(nuimpmonetario) as monto, count(distinct newid) as beneficiarios
+              FROM athena_pub.pub_public
+              WHERE anio=2017 AND cast(newid as integer) < 500000000 AND cddependencia = '20'
+              GROUP BY cdprograma, nbprograma"
+c(dinero_prog_validos,los_queries) := load_or_run(con,query,los_queries)
+colnames(dinero_prog_validos) <- c("cdprograma","nbprograma","monto_validos", "num_beneficiarios")
+
+# Inválidos
+query <- "SELECT cdprograma, nbprograma , sum(nuimpmonetario) as monto, count(distinct newid) as beneficiarios
+              FROM athena_pub.pub_public
+              WHERE anio=2017 AND cast(newid as integer) > 500000000 AND cddependencia = '20'
+              GROUP BY cdprograma, nbprograma"
+
+c(dinero_prog_invalidos,los_queries) := load_or_run(con,query,los_queries)
+colnames(dinero_prog_invalidos) <-  c("cdprograma","nbprograma","monto_invalidos","num_beneficiarios_invalidos")
+
+# indicadores
+dinero_prog <- dinero_prog_validos %>% left_join(dinero_prog_invalidos) %>%
+  drop_na() %>%
+  dplyr::mutate(
+         prop_invalidos = num_beneficiarios_invalidos/(num_beneficiarios_invalidos + num_beneficiarios),
+         prop_monto_invalido= monto_invalidos/(monto_validos + monto_invalidos) ) %>%
+  arrange(prop_invalidos)
+
+
+
+#ggplot(dinero_prog, aes(x=prop_invalidos, y=prop_monto_invalido, fill=nbprograma)) +
+#    geom_bar(stat='identity', position='dodge')
+
+df1 <- data.frame(Proporcion.beneficiarios.invalidos = dinero_prog$prop_invalidos,
+                  Proporcion.monto.invalidos = dinero_prog$prop_monto_invalido,
+                  Nombre.Programa = dinero_prog$nbprograma)
+df2 <- reshape::melt(df1, id = c("Nombre.Programa")) %>% drop_na()
+
+ggplot(data = df2, aes(x = Nombre.Programa, y = value, fill = variable)) + 
+  geom_bar(stat = "identity")+ facet_wrap(~ variable)  + 
+  scale_y_continuous(breaks = round(seq(min(df2$value), 
+                                        max(df2$value), by = 0.05),digits = 3)) + 
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
+
+
+
+## Análisis de Cobertura
+
+```{r,echo=FALSE,message=FALSE, warning=FALSE}
+### Número de beneficiarios por municipio.
+municipios_nal$num_beneficiarios_q <- quant_labels(municipios_nal$num_beneficiarios)
+ggplot() +
+  geom_polygon(data = municipios_nal, aes(long, lat, group=group, fill=num_beneficiarios_q))+
+  labs(title="Número de beneficiarios con newid válido por municipio", fill="Número de Beneficiarios")+
+  scale_fill_brewer(na.value="grey") +
+  coord_fixed()
+
+```
+
+
+```{r,echo=FALSE,message=FALSE, warning=FALSE}
+### Número de beneficiarios entre la población total del municipio
+municipios_nal$ben_entre_pob_total_q <- quant_labels(municipios_nal$ben_entre_pob_total,8)
+ggplot() +
+  geom_polygon(data = municipios_nal, aes(long, lat, group=group, fill=ben_entre_pob_total_q)) +
+  labs(title="Tasa de Beneficiarios con newid válido por población total en el municipio", fill="Tasa de Cobertura") +
+  scale_fill_brewer(na.value="grey") +
+  coord_fixed()
+
+```
+
+
+# Indicadores de eficiencia en el gasto
+
+```{r}
+cuenta_publica <- large_table(con1,raw,cuenta_publica_anual) %>%
+    filter(gpo_funcional=="2" & ciclo ==2017 & id_ramo == "20") %>%
+    select(ciclo, id_ramo, id_modalidad, id_pp, desc_pp, monto_aprobado) %>%
+    retrieve_result()
+cuenta_publica <- cuenta_publica %>% 
+  mutate(cdprograma = paste0(id_modalidad, str_pad(id_pp, width = 3, pad = '0')))  %>%
+  group_by(ciclo, id_ramo, cdprograma, desc_pp) %>%
+  summarise(monto_aprobado = sum(monto_aprobado))
+
+# validos
+query <- "SELECT cdprograma, sum(nuimpmonetario) as monto
+              FROM athena_pub.pub_public
+              WHERE anio=2017 AND cddependencia = '20'
+              GROUP BY cdprograma"
+
+c(dinero_mun_invalidos,los_queries) := load_or_run(con,query,los_queries)
+colnames(dinero_mun_invalidos) <- c("cdprograma","monto")
+
+cuenta_p <- dinero_mun_invalidos %>% left_join(cuenta_publica) %>% 
+  mutate(porcentaje_monto = monto/monto_aprobado)
+
+cuenta_p 
+
+df1 <- data.frame(nombre.programa = cuenta_p$desc_pp,
+                  monto_aprobado = cuenta_p$monto_aprobado,
+                  monto_beneficiarios = cuenta_p$monto)
+df2 <- reshape::melt(df1, id = c("nombre.programa")) %>% drop_na()
+
+ggplot(data = df2, aes(x = nombre.programa, y = value, fill = variable)) + 
+  geom_bar(stat = "identity")+ facet_wrap(~ variable)   +
+  theme(axis.text.x = element_text(angle = 90,hjust = 1),plot.title = element_text(size = 30, face = "bold"),axis.text.y = element_text(size = 15))
+
+
+ggplot(data = cuenta_p, aes(x = desc_pp, y = porcentaje_monto, fill = desc_pp)) + 
+  geom_bar(stat = "identity")  +
+  theme(axis.text.x = element_text(angle = 90,hjust = 1),plot.title = element_text(size = 30, face = "bold"),axis.text.y = element_text(size = 15))
+ggsave("temp.jpg")
+
+```
+
+# Análisis de Progresividad
+
+### Número de beneficiarios entre población en situación de pobreza en el municipio
+```{r,echo=FALSE,message=FALSE, warning=FALSE}
+### Número de beneficiarios entre población en situación de pobreza en el municipio
+municipios_nal$ben_entre_pobreza_q <- quant_labels(municipios_nal$ben_entre_pobreza)
+ggplot() + 
+  geom_polygon(data = municipios_nal, aes(long, lat, group=group, fill=ben_entre_pobreza_q)) +
+  labs(title="Tasa de beneficiarios con newid válido por población en situación de pobreza en el municipio", fill="Tasa de Cobertura") +
+  scale_fill_brewer(na.value="grey") + 
+  coord_fixed()
+```
+
+### Número de beneficiarios entre población en situación de pobreza en el municipio
+```{r,echo=FALSE,message=FALSE, warning=FALSE}
+progre <- ggplot(municipios_nal, aes(x=pobreza_porcentaje, 
+                                     y=ben_entre_pob_total*100, 
+                                     color=entidad, text = municipio)) +
+  geom_point() + xlim(0, 100) + ylim(0, 100) + 
+  geom_abline(intercept = 0, slope = 1, color="black", 
+                 linetype="dashed", size=.5) + xlab("Porcentaje de Población en Pobreza") + 
+  ylab("Porcentaje de Cobertura") + ggtitle("Análisis de Progresividad Municipal")
+
+progre
+#ggp<-ggplotly(progre, tooltip = c('text'))
+#htmlwidgets::saveWidget(ggp, "~/temp/progresividad_scatter.html")
+
+
+```
+
+# Detección de Outliers
+
+# Número de programas
+
+```{r,echo=FALSE,results='hide',message=FALSE, warning=FALSE}
+query <- "WITH los_montos AS (SELECT cveent, newid, COUNT(DISTINCT cdprograma)  as monto
+          FROM athena_pub.pub_public
+          WHERE anio=2017 AND cast(newid as integer) < 500000000  AND cddependencia = '20'
+          GROUP BY cveent, newid),
+
+          los_valores AS (SELECT cveent, avg(monto) as media, approx_percentile(monto,0.25) as q1,
+                  approx_percentile(monto,0.5) as q2, approx_percentile(monto,0.75) as q3,
+                  stddev(monto) as std, array_agg(monto) as valores
+          FROM los_montos
+          GROUP BY cveent),
+
+          los_rangos AS (SELECT cveent, media, q1, q2, q3,  std, abs(q3)-abs(q1) as IQR, filter(valores, x -> x IS NOT NULL) as nonull
+          FROM los_valores)
+
+          SELECT cveent, media, q1, q2, q3, std,
+          array_union(filter(nonull, x -> x > q3+1.5*IQR),filter(nonull, x -> x < q1-1.5*IQR)) as outliers,
+          array_min(array_intersect(filter(nonull,x -> x > q3),filter(nonull,x -> x < q3+1.5*IQR))) as max,
+          array_max(array_intersect(filter(nonull,x -> x < q1),filter(nonull,x -> x > q1-1.5*IQR))) as min
+          FROM los_rangos"
+
+c(estadisticos_prospera_validos,los_queries) := load_or_run(con,query,los_queries)
+estadisticos_prospera_validos
+
+estadisticos_prospera_validos$cveent <- as.integer(estadisticos_prospera_validos$cveent)
+estadisticos_prospera_validos <- estadisticos_prospera_validos %>%
+  left_join(los_estados)
+estadisticos_prospera_validos$outliers <- gsub('\\[|\\]','',estadisticos_prospera_validos$outliers) %>%
+  strsplit(., split=", ")
+estadisticos_prospera_validos$outliers <- lapply(estadisticos_prospera_validos$outliers,as.integer)
+
+all_values <-unnest(estadisticos_prospera_validos,outliers)
+```
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+query <- "SELECT cvemuni, count(distinct newid), sum(nuimpmonetario) as monto
+              FROM athena_pub.pub_public
+              WHERE anio=2017 AND cast(newid as integer) < 500000000 AND cddependencia='20' 
+              GROUP BY cvemuni"
+
+c(monto_anual_municipal,los_queries) := load_or_run(con,query,los_queries)
+colnames(monto_anual_municipal) <- c("cve_muni","num_beneficiarios", "cuenta")
+
+dinero_mun_validos <- monto_anual_municipal %>%
+  left_join(poblacion) %>%
+  mutate(ben_entre_pob_total = num_beneficiarios/poblacion_intercensal) %>%
+  arrange(cve_muni)
+
+municipios_nal <- geom_nal %>%
+  left_join(dinero_mun_validos)
+
+municipios_nal$valor <- quant_labels(municipios_nal$ben_entre_pob_total)
+
+plot1 <- ggplot() +
+  geom_polygon(data = municipios_nal, aes(long, lat, group=group, fill=valor))+
+  labs(title="Tasa de beneficiarios únicos por municipio (SEDESOL)", fill="Número de Beneficiarios")+
+  scale_fill_brewer(na.value="grey")+
+  coord_fixed()
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+plot2 <- qplot(municipios_nal$ben_entre_pob_total, geom="histogram")  + xlab("Tasa de Cobertura") 
+plot2
+```
+
+
+
+<!-- ```{r, echo=FALSE, message=FALSE, warning=FALSE} -->
+<!-- # Por año -->
+<!-- query <- "SELECT anio, count(distinct newid), sum(nuimpmonetario) as monto -->
+<!--               FROM athena_pub.pub_public -->
+<!--               WHERE cast(newid as integer) < 500000000 AND cddependencia='20'  -->
+<!--               GROUP BY anio" -->
+
+<!-- c(monto_anual_municipal_por_año,los_queries) := load_or_run(con,query,los_queries) -->
+<!-- colnames(monto_anual_municipal_por_año) <- c("anio","num_beneficiarios", "cuenta") -->
+
+<!-- ggplot(monto_anual_municipal_por_año, aes(anio, num_beneficiarios)) + geom_line() -->
+
+<!-- # Por año y municipios -->
+<!-- query <- "SELECT anio, cvemuni, count(distinct newid), sum(nuimpmonetario) as monto -->
+<!--               FROM athena_pub.pub_public -->
+<!--               WHERE cast(newid as integer) < 500000000 AND cddependencia='20'  -->
+<!--               GROUP BY anio, cvemuni" -->
+
+<!-- c(monto_anual_municipal_por_año_m,los_queries) := load_or_run(con,query,los_queries) -->
+<!-- colnames(monto_anual_municipal_por_año_m) <- c("anio","cve_muni","num_beneficiarios", "cuenta") -->
+
+<!-- monto_anual_municipal_por_año_m %>% -->
+<!--     ggplot(aes(x = anio, y = num_beneficiarios, color = cve_muni)) + -->
+<!--     facet_wrap(~ package, ncol = 3, scale = "free_y") + -->
+<!--     scale_color_tq() + -->
+<!--     theme_tq() + -->
+<!--     theme(legend.position="none") -->
+<!-- ``` -->
+
+
+<!-- ## Ejemplo de análisis por tipo de programa -->
+<!-- Se utilizan las siguientes claves -->
+<!--   indic_a	El apoyo reduce la inseguridad alimentaria severa  -->
+<!--   indic_b	El apoyo reduce la inseguridad alimentaria moderada  -->
+<!--   indic_c	El apoyo incrementa el número de viviendas con piso firme de cemento o recubrimiento (laminado, mosaico, madera) -->
+<!--   indic_d	El apoyo incrementa el número de viviendas con techo de losa de concreto o viguetas con bovedilla, terrado con viguería, lámina metálica, asbesto, palma, teja o de calidad superior -->
+<!--   indic_e	El apoyo reduce el número de viviendas con muros de embarro, bajareque, carrizo, bambú, palma, lámina de cartón, metálica, asbesto o material de desecho -->
+<!--   indic_f	El apoyo reduce el hacinamiendo en la vivienda -->
+<!--   indic_g	El apoyo incrementa el número de viviendas que obtienen agua dentro de sus muros o su terreno -->
+<!--   indic_h	El apoyo incrementa el número de viviendas con drenaje conectado a la red pública o a una fosa séptica -->
+<!--   indic_i	El apoyo incrementa el número de viviendas con energía eléctrica obtenida del servicio público, de panel solar o de otra fuente o planta particular -->
+<!--   indic_j	El apoyo reduce el número de viviendas que usan leña o carbón para cocinar o calentar los alimentos y no cuentan con chimenea -->
+<!--   indic_k	El apoyo incrementa el número de personas con acceso a los servicios de salud a través del Seguro Popular, instituciones públicas de seguridad social o servicios médicos privados -->
+<!--   indic_l	El apoyo reduce el número de personas de 3 a 15 años que no cuentan con la educación básica obligatoria y no asisten a un centro de educación formal -->
+<!--   indic_m	El apoyo incrementa el número de personas con primaria completa (nacidas antes de 1982) -->
+<!--   indic_n	El apoyo incrementa el número de personas con secundaria completa (nacidas a partir de 1982 y mayores de 15 años) -->
+<!--   indic_o	El apoyo incrementa el número de personas asalariadas con servicio médico, incapacidad y AFORE -->
+<!--   indic_p	El apoyo incrementa el número de personas trabajadoras no asalariadas o independientes con acceso a servicio médico, como prestación laboral o por contratación voluntaria, y que cuenta con SAR o AFORE -->
+<!--   indic_q	El apoyo incrementa el número de personas en edad de jubilación (65 años o más) que tiene acceso a la seguridad social a través de algún programa social de pensiones para adultos mayores -->
+<!--   indic_r	El apoyo incrementa el número de hogares con ingreso corriente total per cápita mayor al costo de la canasta básica completa -->
+<!--   indic_s	El apoyo incrementa el número de hogares cuyo ingreso corriente total per cápita es mayor que el costo de la canasta básica alimentaria -->
+<!--   indic_t	Ninguno de los indicadores anteriores -->
+
+<!-- ```{r, echo=FALSE, message=FALSE, warning=FALSE} -->
+<!-- cves <- cuaps %>% dplyr::filter(indic_a>0 | indic_b>0) %>% select(chr_clave_prespupuestal_pro) %>%   -->
+<!--   filter(chr_clave_prespupuestal_pro!="S070",chr_clave_prespupuestal_pro!= "S053") %>%  pull() %>% -->
+<!--   paste(collapse="', '" )  -->
+
+<!-- query <- glue::glue("SELECT cvemuni, sum(nuimpmonetario) as monto, count(distinct newid) as beneficiarios  -->
+<!--               FROM athena_pub.pub_public  -->
+<!--               WHERE cdprograma IN ('{cves}') AND anio=2017 AND cast(newid as integer) < 500000000 AND cddependencia='20'  -->
+<!--               GROUP BY cvemuni") -->
+
+<!-- c(monto_20_mun_validos,los_queries) := load_or_run(con,query,los_queries) -->
+<!-- head(monto_20_mun_validos) -->
+<!-- colnames(monto_20_mun_validos) <- c("cve_muni", "cuenta", "num_beneficiarios") -->
+
+<!-- monto_20_mun_validos_ <- monto_20_mun_validos %>% -->
+<!--   left_join(poblacion, by = "cve_muni") %>% -->
+<!--   mutate(ben_pobla=cuenta/poblacion_intercensal, -->
+<!--          ben_entre_pob_total = num_beneficiarios/poblacion_intercensal, -->
+<!--          ben_ic_ali = num_beneficiarios/ic_ali_num) %>% -->
+<!--   arrange(cve_muni) -->
+
+<!-- municipios_nal <- geom_nal %>% -->
+<!--   left_join(monto_20_mun_validos_) -->
+
+<!-- ### Número de beneficiarios por municipio. -->
+<!-- municipios_nal <- municipios_nal %>%  -->
+<!--   mutate(num_beneficiarios_q = if_else(condition = ben_ic_ali > 1, NA_real_, ben_ic_ali)) -->
+<!-- municipios_nal$num_beneficiarios_q <- quant_labels(municipios_nal$num_beneficiarios_q) -->
+
+
+<!-- ggplot() + -->
+<!--   geom_polygon(data = municipios_nal, aes(long, lat, group=group, fill=num_beneficiarios_q))+ -->
+<!--   labs(title="Tasa de cobertura por carencia alimentaria y programas relacionados", fill="Número de Beneficiarios")+ -->
+<!--   scale_fill_brewer(na.value="grey") + -->
+<!--   coord_fixed() -->
+<!-- ``` -->
+
+
+
+
+
+
+<!-- # Obtener la suma de benficiarios únicos por el grupo de programas. -->
+<!-- ```{r, echo=FALSE, message=FALSE, warning=FALSE} -->
+
+<!-- # Ver tipos de prog -->
+<!-- dinero_mun_validos <- beneficiarios_muni %>% select_(.dots = cves)  %>%  -->
+<!--   mutate(sum_all = rowSums(select_if(., is.numeric), na.rm = TRUE)) -->
+
+
+
+<!--   left_join(intercensal) %>% -->
+<!--   mutate(ben_pobla=cuenta/poblacion, -->
+<!--          ben_entre_pob_total = num_beneficiarios/poblacion) %>% -->
+<!--   arrange(cve_muni) -->
+
+<!-- geom_nal <- load_geom(con1,raw,geom_municipios,geom_col=geom,col_shape=cve_muni) -->
+
+<!-- municipios_nal <- geom_nal %>% -->
+<!--   left_join(dinero_mun_validos) -->
+
+
+<!-- dinero_mun_validos %>% select(cve_muni, ben_pobla,  -->
+<!--                               ben_entre_pob_total) -->
+
+
+<!-- ``` -->
+

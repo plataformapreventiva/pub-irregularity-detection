@@ -1,0 +1,359 @@
+---
+title: "00_limpieza"
+output: html_document
+---
+
+```{r, echo=FALSE, results='hide', include=FALSE, message=FALSE, warning=FALSE}
+
+source("../../utils.R")
+source("../../poblacion_geometrias.R")
+library(ggthemr)
+ggthemr("dust")
+library(glue)
+library(reshape)
+library(ggpubr)
+
+### DB conections
+con <- pub_connect(s3dir = Sys.getenv("S3_DIR"), schema = Sys.getenv("SCHEMA"))
+con1 <- prev_connect()
+los_queries <- query_dic()
+
+```
+
+
+# Definición de Programas
+ Lista de programas para ser analizados
+```{r}
+query <- "SELECT cdprograma, nbprograma, cdpadron, 
+              count(distinct newid) as beneficiarios_unicos, 
+              sum(nuimpmonetario) as monto 
+            FROM athena_pub.pub_cleaned_test 
+              WHERE anio=2017 AND cddependencia='20' 
+              AND try_cast(newid as integer)  < 500000000
+              GROUP BY cdprograma,  nbprograma, cdpadron"
+
+c(tabla_programas,los_queries) := load_or_run(con,query,los_queries)
+tabla_programas <- tabla_programas %>%
+  mutate(monto = if_else(is.na(monto),0,monto),
+         porcentaje_de_monto = if_else(!is.na(monto),
+                                       paste0(round((monto*100)/sum(tabla_programas$monto,na.rm = TRUE),
+                                                    digits = 2), " %"),"0 %")) 
+colnames(tabla_programas) <- c("Clave de Programa", "Nombre de Programa", "Clave de Padrón", "Beneficiarios únicos", "Monto Total", "Porcentaje") 
+tabla_programas %>%  kable() %>%
+  kable_styling()
+
+
+ggsave(width = 20, height = 20, units = "cm", filename = "../../outputs/reporte/00_limpieza/table.png")
+
+
+cves <- c("S017", # Fomento a la Economía Social
+          "S052", # Liconsa
+          "S065", # Fonart
+          "S071", # PET
+          "S072", # Prospera
+          "S174", # PEI
+          "S176", # PAM
+          "S241", # Sevije
+          "U005", # Seguro Popular
+          "U009") %>% # Comedores Comunitarios
+  paste(collapse="', '" )
+
+  
+ 
+query <- glue::glue("SELECT cddependencia, cdprograma, nbprograma, cdpadron, 
+              count(distinct newid) as beneficiarios_unicos, 
+              sum(nuimpmonetario) as monto  
+            FROM athena_pub.pub_cleaned_test 
+              WHERE anio=2017 
+              AND try_cast(newid as integer) < 500000000 AND cdprograma IN ('{cves}')
+              GROUP BY cddependencia, cdprograma,  nbprograma, cdpadron")
+
+c(tabla_programas,los_queries) := load_or_run(con,query,los_queries)
+tabla_programas <- tabla_programas %>%  arrange(cdprograma,cdpadron)  %>% 
+  mutate(monto = if_else(is.na(monto),0,monto),
+         porcentaje_de_monto = if_else(!is.na(monto),
+                                       paste0(round((monto*100)/sum(tabla_programas$monto,na.rm = TRUE),
+                                                    digits = 2), " %"),"0 %")) 
+colnames(tabla_programas) <- c("Dependencia", 
+                               "Clave de Programa",
+                               "Nombre de Programa", 
+                               "Clave de Padrón", 
+                               "Beneficiarios únicos", "Monto Total", 
+                               "Porcentaje") 
+tabla_programas %>% kable() %>%
+  kable_styling()
+
+```
+
+# Montos totales
+```{r}
+query <- "SELECT count(distinct newid) as beneficiarios_unicos, sum(nuimpmonetario) as monto 
+              FROM athena_pub.pub_cleaned_test 
+              WHERE anio=2017 AND cddependencia='20';"
+c(beneficiarios_sedesol_ALL,los_queries) := load_or_run(con,query,los_queries)
+
+query <- "SELECT count(distinct newid) as beneficiarios_unicos, sum(nuimpmonetario) as monto 
+              FROM athena_pub.pub_cleaned_test 
+              WHERE anio=2017 AND cddependencia='20' 
+              AND try_cast(newid as integer) < 500000000;"
+
+c(beneficiarios_sedesol_validos,los_queries) := load_or_run(con,query,los_queries)
+beneficiarios_sedesol_validos <- beneficiarios_sedesol_validos %>%
+  summarise(beneficiarios_unicos = sum(beneficiarios_unicos,na.rm = TRUE),
+            monto = sum(monto,na.rm = TRUE))
+  
+
+query <- "SELECT count(distinct newid) as beneficiarios_unicos, sum(nuimpmonetario) as monto
+              FROM athena_pub.pub_cleaned_test 
+              WHERE anio=2017 AND cddependencia='20' 
+              AND try_cast(newid as integer) >= 500000000;"
+
+c(beneficiarios_sedesol_invalidos,los_queries) := load_or_run(con,query,los_queries)
+
+a <- bind_rows(beneficiarios_sedesol_validos, beneficiarios_sedesol_invalidos) %>% t()
+colnames(a) <- c("Curp Válida (Buena Calidad)", "Curp Inválida (Calidad Insuficiente)")
+a <- a %>% as_tibble(rownames=NA) #%>% mutate(percentage = validos/(validos+ invalidos)) 
+rownames(a) <- c("Beneficiarios", "Montos")
+a <- a %>% add_rownames(var = "tipo")
+
+DF1 <- melt(as.data.frame(a), id.var="tipo")
+DF1
+
+a<-DF1 %>% filter(tipo=="Beneficiarios") %>% select(value) %>% sum()
+b<-DF1 %>% filter(tipo=="Montos") %>% select(value) %>% sum()
+
+p1 <- ggplot(DF1 %>% filter(tipo=="Beneficiarios"), aes(x = tipo, y = value, fill = variable)) + 
+  geom_bar(stat = "identity") + xlab("") +
+  theme(text = element_text(size=20)) + 
+  ylab("Número de Beneficiarios") + 
+   labs(fill = "Calidad de Identificador") + 
+  geom_text(aes(label = paste0(round(value*100/a,2),"%")), 
+            position = position_stack(vjust = 0.5), size = 10) 
+
+p2 <- ggplot(DF1 %>% filter(tipo=="Montos"), aes(x = tipo, y = value, fill = variable)) + 
+  geom_bar(stat = "identity") + xlab("") + ylab("Montos Otorgados") +
+  theme(text = element_text(size=20)) + 
+  labs(fill = "Calidad de Identificador") + 
+  geom_text(aes(label = paste0(round(value*100/b,2),"%")), 
+            position = position_stack(vjust = 0.5), size = 10) 
+
+figure <- ggarrange(p1, p2,
+                    # labels = c("A", "B"),
+                    ncol = 2, nrow = 1)
+figure
+ggsave(width = 100, height = 50, units = "cm", filename = "../../outputs/reporte/00_limpieza/bar_plot.png")
+```
+
+
+# Serie de tiempo
+```{r}
+
+query <- glue::glue("SELECT anio, count(distinct newid) as beneficiarios_unicos, sum(nuimpmonetario) as monto_unicos 
+              FROM athena_pub.pub_cleaned_test 
+              WHERE cddependencia='20' and cdprograma IN ('{cves}') 
+              GROUP BY anio")
+c(beneficiarios_sedesol,los_queries) := load_or_run(con,query,los_queries)
+
+query <- glue::glue("SELECT anio, count(distinct newid) as beneficiarios_unicos, sum(nuimpmonetario) as monto_unicos 
+              FROM athena_pub.pub_cleaned_test 
+              WHERE cddependencia='20' and cdprograma IN ('{cves}')   
+              AND try_cast(newid as integer) >= 500000000 
+              GROUP BY anio")
+c(beneficiarios_sedesol_invalidos,los_queries) := load_or_run(con,query,los_queries)
+
+beneficiarios_sedesol <- beneficiarios_sedesol %>% mutate(tipo = "Total")
+beneficiarios_sedesol_invalidos <- beneficiarios_sedesol_invalidos %>% mutate(tipo="Invalidos")
+
+a <- bind_rows(beneficiarios_sedesol, beneficiarios_sedesol_invalidos) 
+a1 <- a %>% dplyr::select(-monto_unicos) %>% spread(key = tipo, value = beneficiarios_unicos) %>% 
+  mutate(pct_invalidos = Invalidos/Total) %>% select(anio, pct_invalidos) %>% 
+  gather(key = anio, value = pct_invalidos)  %>% mutate(tipo="Porcentaje de Beneficiarios con\n Identificación de Baja Calidad\n")
+
+a2 <- a %>% dplyr::select(-beneficiarios_unicos) %>% 
+  spread(key = tipo, value = monto_unicos) %>% 
+  mutate(pct_invalidos = Invalidos/Total) %>% 
+  select(anio, pct_invalidos) %>% 
+  gather(key = anio, value = pct_invalidos) %>% mutate(tipo="Porcentaje del Monto Total \nOtorgado a Beneficiarios\ncon Identificación de Baja Calidad")
+b <- bind_rows(a1, a2) %>% 
+  mutate(porcentaje_invalidos = paste0(round(pct_invalidos*100, 2)," %"))
+
+# Número de padrones
+query <- "SELECT anio, count(distinct nbprograma || cdpadron) as distintos_programas
+              FROM athena_pub.pub_cleaned_test 
+              GROUP BY anio"
+
+c(padrones_programas,los_queries) := load_or_run(con,query,los_queries)
+
+
+# ggplot(padrones_programas, aes(x = anio, y = distintos_programas)) + 
+#   geom_line(size = 2) + 
+#   scale_x_continuous(breaks = seq(2011, 2017, 1)) +
+#   labs(color = "") + 
+#   xlab("Año") + ylab("Número de Padrones")
+
+myplot <- ggplot(tips, aes(day)) + 
+          geom_bar(aes(y = (..count..)/sum(..count..))) + 
+          scale_y_continuous(labels=scales::percent) +
+  ylab("relative frequencies")
+
+time_series <- ggplot(b, aes(x = anio, y = pct_invalidos, color=factor(tipo))) + 
+  geom_line(size = 2) + 
+  scale_y_continuous(breaks = seq(0, .45, .05),labels=scales::percent) +
+  scale_x_continuous(breaks = seq(2011, 2017, 1))  +
+   theme(text = element_text(size=20)) +
+  labs(color = "") +
+   theme(text = element_text(size=20)) +
+  xlab("Año") + ylab("Porcentaje")
+
+time_series
+ggsave(width = 50, height = 20, units = "cm", filename = "../../outputs/reporte/00_limpieza/time_series.png")
+
+```
+
+
+# Mapas
+```{r}
+# Todos
+query <- "SELECT cvemuni, sum(nuimpmonetario) as monto, count(distinct newid) as beneficiarios 
+              FROM athena_pub.pub_cleaned_test 
+              WHERE anio=2017 AND cddependencia = '20' 
+              GROUP BY cvemuni"
+c(dinero_mun,los_queries) := load_or_run(con,query,los_queries)
+colnames(dinero_mun) <- c("cve_muni","montos", "num_beneficiarios")
+
+# Inválidos
+query <- "SELECT cvemuni, sum(nuimpmonetario) as monto, count(distinct newid) as beneficiarios 
+              FROM athena_pub.pub_cleaned_test  
+              WHERE anio=2017 AND cast(newid as integer) > 500000000 AND cddependencia = '20'   
+                and intitular = '1' 
+              GROUP BY cvemuni"
+
+c(dinero_mun_invalidos,los_queries) := load_or_run(con,query,los_queries)
+colnames(dinero_mun_invalidos) <- c("cve_muni","monto_invalidos","num_beneficiarios_invalidos")
+
+# indicadores
+dinero_mun <- dinero_mun %>% left_join(dinero_mun_invalidos) %>%
+  left_join(intercensal) %>%   left_join(coneval) %>% 
+  drop_na() %>%
+  dplyr::mutate(prop_monto_invalido = monto_invalidos/(montos + monto_invalidos),
+                prop_ben_invalido = num_beneficiarios_invalidos/(num_beneficiarios_invalidos + num_beneficiarios)) %>%
+  arrange(cve_muni)
+
+municipios_nal <- geom_nal %>%
+  left_join(dinero_mun)
+
+municipios_nal$num_beneficiarios_q <- quant_labels(municipios_nal$prop_ben_invalido *100)
+#municipios_nal$num_beneficiarios_q <- gsub(" –", " % –", municipios_nal$num_beneficiarios_q)
+#municipios_nal$num_beneficiarios_q <- sub("$", " %", municipios_nal$num_beneficiarios_q)
+
+map_ben <- ggplot(municipios_nal %>% drop_na(), aes(label=num_beneficiarios_q)) +
+  geom_polygon(aes(long, lat, group=group, fill=num_beneficiarios_q))+
+  labs(#title="Proporción de beneficiarios con identificador  \n con Calidad Insuficiente por municipio", 
+       fill="" ) +
+  scale_fill_brewer(palette="Greens", na.value="grey") +
+  coord_fixed() +
+   theme(axis.text.x = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks = element_blank(),
+        text = element_text(size=20)) + xlab("") + ylab("") 
+map_ben
+ggsave(width = 20, height = 20, units = "cm", filename = "../../outputs/reporte/00_limpieza/mapa_beneficiarios.png")
+```
+
+```{r}
+municipios_nal$num_beneficiarios_q <- quant_labels(municipios_nal$prop_monto_invalido *100)
+#municipios_nal$num_beneficiarios_q <- gsub(" –", " % –", municipios_nal$num_beneficiarios_q)
+#municipios_nal$num_beneficiarios_q <- sub("$", " %", municipios_nal$num_beneficiarios_q)
+
+map_monto <- ggplot(municipios_nal %>% drop_na(), aes(label=num_beneficiarios_q)) +
+  geom_polygon(aes(long, lat, group=group, fill=num_beneficiarios_q))+
+  labs(#title="Proporción del Monto total Otorgado a Beneficarios con identificador \n con Calidad Insuficiente por municipio", 
+       fill="" )+
+  scale_fill_brewer(palette="Greens", na.value="grey") +
+  coord_fixed() +
+   theme(axis.text.x = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks = element_blank(),
+        text = element_text(size=20)) + xlab("") + ylab("")
+map_monto
+ggsave(width = 20, height = 20, units = "cm", filename = "../../outputs/reporte/00_limpieza/mapa_monto.png")
+
+```
+
+
+
+## Análisis por programa
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# todos
+
+cves <- c('S072',# prospera
+          'S176',# pam 
+          'S065',# paja 
+          'S071',# pet 
+          'S241',# SEVIJE
+          'S174',# PEI
+          'S052',# LICONSA
+          'U009',# COMEDORES
+          'U005') %>% # SEGURO POPULAR 
+    paste(collapse="', '" )
+
+query <- glue::glue("SELECT anio, cdprograma, nbprograma, sum(nuimpmonetario) as monto, count(distinct newid) as 
+              beneficiarios 
+              FROM athena_pub.pub_public 
+              WHERE cdprograma IN ('{cves}')
+              GROUP BY anio, cdprograma, nbprograma")
+
+c(dinero_prog_validos,los_queries) := load_or_run(con,query,los_queries)
+colnames(dinero_prog_validos) <- c("anio", "cdprograma",
+                                   "nbprograma","monto_validos",
+                                   "num_beneficiarios")
+
+# Inválidos
+query <- glue::glue("SELECT anio, 
+              cdprograma, nbprograma, 
+              sum(nuimpmonetario) as monto, 
+              count(distinct newid) as beneficiarios 
+           FROM athena_pub.pub_public 
+              WHERE try_cast(newid as integer) > 500000000 AND cdprograma IN ('{cves}')
+              GROUP BY anio, cdprograma, nbprograma")
+
+c(dinero_prog_invalidos,los_queries) := load_or_run(con,query,los_queries)
+colnames(dinero_prog_invalidos) <- c("anio","cdprograma",
+                                     "nbprograma","monto_invalidos",
+                                     "num_beneficiarios_invalidos")
+
+# indicadores
+names<- dinero_prog_validos %>% filter(anio == '2017') %>% select(cdprograma, nbprograma)
+dinero_prog <- dinero_prog_validos %>% select(-nbprograma) %>%
+  left_join(dinero_prog_invalidos%>% select(-nbprograma), by=c("anio","cdprograma")) %>%
+  drop_na() %>%
+  dplyr::mutate(
+         proporcion_id_insuficiente = num_beneficiarios_invalidos/(num_beneficiarios_invalidos + num_beneficiarios),
+         proporcion_monto_id_insuficiente = monto_invalidos/(monto_validos + monto_invalidos) ) %>%
+  arrange(proporcion_id_insuficiente) %>% left_join(names)
+
+df1 <- dinero_prog %>% select(anio, cdprograma, nbprograma,  proporcion_id_insuficiente,proporcion_monto_id_insuficiente)
+df2 <- df1 %>% gather(proporcion_id_insuficiente, 
+                      proporcion_monto_id_insuficiente, key = "tipo", value = "valor")
+df2 <- df2 %>% filter(!cdprograma %in% c('OAX','U008', 'S048', 'S213', 'U009'))
+df2 <- df2 %>% mutate(tipo = if_else(tipo=="proporcion_id_insuficiente", 
+                                     "Proporción de Beneficiarios \n con id de calidad insuficiente \n\n ", "Proporción de Montos Otorgados a \n Beneficiarios con id de Calidad\n Insuficiente"))
+
+
+time_s <- df2  %>% mutate(nbprograma = str_wrap(nbprograma, width = 25)) %>% 
+  ggplot(aes(x = anio, y = valor, colour=tipo)) + 
+  geom_line(size = 2) + 
+  scale_x_continuous(breaks = seq(2011, 2017, 1))  +
+  scale_y_continuous(labels=scales::percent) +
+  facet_wrap(~nbprograma, nc=4) +
+  theme(text = element_text(size=30)) +
+  labs(color = "") + 
+  theme_minimal() +
+  xlab("Año") + ylab("Proporción de Montos y Beneficiarios con \n Identificación de Baja Calidad \n en programas de SEDESOL") 
+
+time_s
+ggsave(width = 50, height = 20, units = "cm", filename = "../../outputs/reporte/00_limpieza/programa_analisis.png")
+
+
+```

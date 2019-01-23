@@ -1,0 +1,108 @@
+---
+title: "01_programas"
+output: html_document
+---
+
+
+
+```{r, echo=FALSE, results='hide', include=FALSE, message=FALSE, warning=FALSE}
+source("../../utils.R")
+### DB conections
+con <- pub_connect(s3dir = Sys.getenv("S3_DIR"), schema = Sys.getenv("SCHEMA"))
+con1 <- prev_connect()
+los_queries <- query_dic()
+
+```
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# Cuestionario Único para el Análisis de Programas Sociales (CUAPS)
+## Programas
+cuaps_programas <- load_table(con1,raw,cuaps_programas) %>% 
+  retrieve_result() %>% filter(chr_cve_dependencia == "20") %>% 
+  select(cuaps_folio, chr_nombre_programa_cuaps, 
+         chr_clave_prespupuestal_pro, obj_gral_prog, 
+         obj_esp_prog_1, pob_obj_prog, der_social_edu, 
+         der_social_sal, der_social_alim, der_social_viv, 
+         der_social_mam, der_social_tra, der_social_segsoc, 
+         der_social_nodis, der_social_beco, der_social_ning)
+
+## Componentes
+cuaps_apoyos <- load_table(con1,raw,cuaps_apoyos) %>% retrieve_result() %>% 
+  select(cuaps_folio, id_componente, nombre_componente, id_apoyo, tipo_apoyo_mon, 
+         nombre_apoyo, descr_apoyo, indic_a, indic_b, indic_c, indic_d, indic_e, indic_f, 
+         indic_g, indic_h, indic_i, indic_j, indic_k, indic_l, 
+         indic_m, indic_n, indic_o, indic_p, indic_q, indic_r, 
+         indic_s, indic_t, tem_apoyo)
+
+## Componentes Agregado
+# cuaps_apoyos_g <- cuaps_apoyos %>% 
+#   select(cuaps_folio, tipo_apoyo_mon, indic_a, indic_b, indic_c, indic_d, indic_e, indic_f, 
+#          indic_g, indic_h, indic_i, indic_j, indic_k, indic_l, 
+#          indic_m, indic_n, indic_o, indic_p, indic_q, indic_r, 
+#          indic_s, indic_t) #%>% group_by(cuaps_folio) %>%
+# #  summarise_all(sum)
+
+cuaps <- left_join(cuaps_programas, cuaps_apoyos, by="cuaps_folio") %>%
+  mutate(c_indic_alimentaria = (indic_a + indic_b) > 0,
+         c_indic_vivienda = (indic_c + indic_d + indic_e + indic_f) > 0,
+         c_indic_servicios = (indic_g + indic_h + indic_i + indic_j) > 0,
+         c_indic_salud = (indic_k) > 0,
+         c_indic_educacion = (indic_l + indic_m + indic_n) > 0,
+         c_indic_segsocial = (indic_o + indic_p + indic_q) > 0,
+         c_indic_ingreso_lb = (indic_r) > 0,
+         c_indic_ingreso_lbm = (indic_s) > 0) %>% 
+  mutate(tipo_apoyo_mon = if_else(tipo_apoyo_mon>0,1,0))
+
+
+cuaps %>% filter(chr_clave_prespupuestal_pro %in% c("0263","0377","0424","0519",
+                                                     "0522","E003","S052","S057",
+                                                     "S065","S071","S072","S174",
+                                                     "S176","S241","S241")) %>%
+  write_csv("../../outputs/cuaps_sedesol.csv")
+
+## Beneficios
+catalogo_beneficios <- csv_s3()
+colnames(catalogo_beneficios) <- c("cdbeneficio","nbbeneficio")
+
+```
+
+
+```{r}
+query <- "SELECT nombreprograma, cdprograma, nombresubp1, cdpadron, nombretipobeneficio, tipobeneficiario, count(distinct newid) as beneficiarios_unicos, sum(nuimpmonetario) as monto 
+              FROM athena_pub.pub_cleaned 
+              WHERE anio='2017' AND cddependencia='20' 
+              GROUP BY nombreprograma, cdprograma, nombresubp1, cdpadron, tipobeneficiario,
+              nombretipobeneficio"
+
+c(programas_sedesol,los_queries) := load_or_run(con,query,los_queries)
+
+# programas_sedesol_ <- programas_sedesol %>% dplyr::full_join(cuaps, 
+#                                            by= c("cdprograma" = "chr_clave_prespupuestal_pro"))
+# 
+# 
+# 
+# programas_sedesol_ <- programas_sedesol_ %>% 
+#   select(chr_nombre_programa_cuaps, cdpadron, nombretipobeneficio,
+#   tipo_apoyo_mon,cdprograma,obj_gral_prog, 
+#   beneficiarios_unicos, monto, c_indic_alimentaria, 
+#   c_indic_vivienda, c_indic_servicios, c_indic_salud, 
+#   c_indic_educacion, c_indic_segsocial, c_indic_ingreso_lb, 
+#   c_indic_ingreso_lbm) 
+# Recode
+
+carencias <- c("c_indic_alimentaria" = "Carencia Alimentaria",
+          "c_indic_vivienda" = "Carencia por Espacios de Vivienda",
+          "c_indic_servicios" = "Carencia por Servicios Básicos en la Vivienda",
+          "c_indic_salud" = "Carencia por Acceso a los Servicios de Salud",
+          "c_indic_educacion" = "Carencia por Rezago Educativo",
+          "c_indic_segsocial" = "Carencia por Acceso a la Seguridad Social",
+          "c_indic_ingreso_lb" = "Ingreso Menor a la Linea de Bienestar",
+          "c_indic_ingreso_lbm" = "Ingreso Menor a la Linea de Bienestar Mínimo")
+
+colnames(programas_sedesol_)  <- dplyr::recode(colnames(programas_sedesol_) , !!!carencias)
+
+programas_sedesol_ %>% write_csv("../../outputs/programas_sedesol.csv")
+programas_sedesol  %>% write_csv("../../outputs/programas_sedesol.csv")
+```
+

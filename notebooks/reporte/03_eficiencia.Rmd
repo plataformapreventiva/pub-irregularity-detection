@@ -1,0 +1,162 @@
+---
+title: "02_eficiencia"
+output: html_document
+---
+```{r, echo=FALSE, results='hide', include=FALSE, message=FALSE, warning=FALSE}
+
+source("../../poblacion_geometrias.R")
+
+source("../../utils.R")
+library(ggthemr)
+
+ggthemr("dust")
+library(glue)
+library(reshape)
+library(ggpubr)
+
+### DB conections
+con <- pub_connect(s3dir = Sys.getenv("S3_DIR"), schema = Sys.getenv("SCHEMA"))
+con1 <- prev_connect()
+los_queries <- query_dic()
+
+```
+
+
+```{r}
+
+cuenta_publica <- large_table(con1,raw,cuenta_publica_anual) %>% 
+  filter((monto_ejercicio>0 | monto_aprobado>0)) %>%
+  group_by(ciclo, id_modalidad, id_pp) %>%
+  summarise(monto_aprobado = sum(monto_aprobado, na.rm = TRUE), 
+            monto_ejercicio = sum(monto_ejercicio, na.rm = TRUE)) %>%
+  retrieve_result() %>% 
+  select(ciclo, id_modalidad, id_pp, monto_aprobado, monto_ejercicio) %>% 
+  mutate(cdprograma = paste0(id_modalidad, str_pad(id_pp, width = 3, pad = '0')))  %>%
+  dplyr::rename(anio=ciclo) %>%
+  arrange(cdprograma, anio)
+
+cuenta_publica %>% filter(cdprograma == 'S072')
+
+query <- "SELECT anio, cdprograma, nbprograma, sum(nuimpmonetario) as monto, 
+              count(distinct newid) as beneficiarios 
+              FROM athena_pub.pub_public 
+              WHERE cddependencia = '20' 
+              AND nuimpmonetario>0 
+              GROUP BY anio, cdprograma, nbprograma"
+c(montos_anio_programa,los_queries) := load_or_run(con,query,los_queries)
+#               AND newid  < 500000000 
+montos_anio_programa%>% filter(cdprograma == 'S072')
+cuenta_publica
+```
+
+
+
+```{r}
+
+cuenta_p <- montos_anio_programa %>% inner_join(cuenta_publica, by = c("anio","cdprograma")) %>%
+  mutate(devengado_otorgados = monto/monto_aprobado,
+         gasto_operacion = monto_aprobado - monto,
+         pct_gasto_operacion = gasto_operacion /monto_aprobado ,
+         pct_otorgados = monto/monto_ejercicio,
+         costo_operacion_per_beneficiario = gasto_operacion/beneficiarios,
+         consistencia_presupuestaria = monto_ejercicio/monto_aprobado)
+
+csv <- cuenta_p %>% select(anio, cdprograma, nbprograma, beneficiarios,
+                           monto_ejercicio, monto, pct_gasto_operacion,
+                           pct_otorgados, costo_operacion_per_beneficiario, 
+                    consistencia_presupuestaria) %>% arrange(cdprograma, anio) 
+
+csv <- csv %>% drop_na()
+csv
+ggthemr_reset()
+
+```
+
+
+```{r}
+
+n_beneficiarios <- ggplot(montos_anio_programa, aes(x = anio, y = beneficiarios)) + 
+  geom_line(size = 2) + 
+  scale_x_continuous(breaks = seq(2011, 2017, 1))  +
+  scale_y_continuous(labels=scales::comma) + 
+  facet_wrap(~nbprograma, nc=3, scales = "free") +
+  theme(text = element_text(size=30)) +
+  labs(color = "") + 
+  theme_minimal() +
+  xlab("Año") + ylab("monto otorgado / monto ejercicio") # + guides(fill=FALSE, color=FALSE)
+
+montos_otorgados <- ggplot(montos_anio_programa, aes(x = anio, y = monto)) + 
+  geom_line(size = 2) + 
+  scale_x_continuous(breaks = seq(2011, 2017, 1))  +
+  scale_y_continuous(labels=scales::comma) + 
+  facet_wrap(~nbprograma, nc=4, scales = "free") +
+  theme(text = element_text(size=20)) +
+  labs(color = "") + 
+  theme_minimal() +
+  xlab("Año") + ylab("monto otorgado / monto ejercicio") # + guides(fill=FALSE, color=FALSE)
+
+promedio_benefi <- ggplot(montos_anio_programa, aes(x = anio, y = monto/beneficiarios)) + 
+  geom_line(size = 2) + 
+  scale_x_continuous(breaks = seq(2011, 2017, 1))  +
+  scale_y_continuous(labels=scales::comma) + 
+  facet_wrap(~nbprograma, nc=4, scales = "free") +
+  theme(text = element_text(size=20)) +
+  labs(color = "") + 
+  theme_minimal() +
+  xlab("Año") + ylab("Monto Otorgado / Número de Beneficiarios") # + guides(fill=FALSE, color=FALSE)
+
+
+```
+
+
+```{r}
+pct_otorgados <- ggplot(csv %>% drop_na(), aes(x = anio, y = pct_otorgados)) + 
+  geom_line(size = 2) + 
+  scale_x_continuous(breaks = seq(2011, 2017, 1))  +
+  facet_wrap(~nbprograma, nc=3, scales = "free") +
+  theme(text = element_text(size=20)) +
+  labs(color = "") + 
+  theme_minimal() +
+  xlab("Año") + ylab("monto otorgado / monto ejercicio") # + guides(fill=FALSE, color=FALSE)
+
+pct_otorgados
+
+
+costo_operacion_per_beneficiario_p <- ggplot(csv %>% drop_na(), aes(x = anio, y = costo_operacion_per_beneficiario)) + 
+  geom_line(size = 2) + 
+  scale_x_continuous(breaks = seq(2011, 2017, 1))  +
+  facet_wrap(~nbprograma, nc=3, scales = "free") +
+  theme(text = element_text(size=20)) +
+  labs(color = "") + 
+  theme_minimal() +
+  xlab("Año") + ylab("monto otorgado / monto ejercicio") # + guides(fill=FALSE, color=FALSE)
+
+costo_operacion_per_beneficiario_p
+
+pct_gasto_operacion_p <- ggplot(csv %>% drop_na(), aes(x = anio, y = pct_gasto_operacion)) + 
+  geom_line(size = 2) + 
+  scale_x_continuous(breaks = seq(2011, 2017, 1))  +
+  facet_wrap(~nbprograma, nc=3, scales = "free") +
+  theme(text = element_text(size=20)) +
+  labs(color = "") + 
+  theme_minimal() +
+  xlab("Año") + ylab("(Monto Aprobado - Beneficios Otorgados) / Monto Aprobado ") # + guides(fill=FALSE, color=FALSE)
+
+pct_gasto_operacion_p
+
+
+```
+```{r}
+consistencia <- ggplot(csv %>% drop_na(), aes(x = anio, y = consistencia_presupuestaria)) + 
+  geom_line(size = 2) + 
+  scale_x_continuous(breaks = seq(2011, 2017, 1))  +
+  facet_wrap(~nbprograma, nc=3, scales = "free") +
+  theme(text = element_text(size=20)) +
+  labs(color = "") + 
+  theme_minimal() +
+  xlab("Año") + ylab(" Monto ejercido / Monto Aprobado") # + guides(fill=FALSE, color=FALSE)
+
+consistencia
+
+```
+
